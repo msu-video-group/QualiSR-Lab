@@ -24,16 +24,21 @@ The sections below describe the required data format and the workflow.
 Example of a valid dataset layout:
 
 ```text
-main_folder/
+data/
 ├── gt/
 │   ├── 0000001.png        # GT images, shape: (H, W, 3)
 │   └── ...
 ├── lr/
 │   ├── 0000001.png        # LR images, shape: (H/scale, W/scale, 3)
 │   └── ...
-├── masks/
-│   ├── 0000001.npy.gz     # Artifact masks, shape: (H, W, 1)
-│   └── ...
+├── heatmaps/
+│   ├── sr_method_1/
+│   │   ├── 0000001.npy.gz # Artifact masks, shape: (H, W, 1)
+│   │   └── ...
+│   ├── ...
+│   └── sr_method_N/
+│       ├── 0000001.npy.gz
+│       └── ...
 ├── sr_method_1/
 │   ├── 0000001.png        # SR images, shape: (H, W, 3)
 │   └── ...
@@ -66,6 +71,23 @@ test_case,method,score_norm
 
 ## Workflow
 
+### Step 0 (optional): Prepare reference images
+
+Produce RLFN / SPAN / bicubic images for LR + SR pairs (used to compute FR metrics).
+
+```bash
+python scripts/make_reference.py \
+  --lr-dir data/lr \
+  --sr-dirs PASD=data/PASD SUPIR=data/SUPIR RealESRGAN=data/RealESRGAN \
+  --out-root data/ \
+  --refs bicubic rlfn span \
+  --scale 4 \
+  --rlfn-script realtime_sr/RLFN/inference-RLFN.py \
+  --rlfn-ckpt realtime_sr/RLFN/rlfn-tuned-4x.pth \
+  --span-script realtime_sr/SPAN/inference-SPAN.py \
+  --span-ckpt realtime_sr/SPAN/span-tuned-4x.pth
+```
+
 ### Step 1: Compute image features
 
 Compute FR / NR / VGG / ResNet / SigLIP features for SR images and save them into a single CSV file.
@@ -78,18 +100,14 @@ Reference image filenames are expected in the format:
 ```
 
 ```bash
-python3 get_image_features.py \
-  --sr-dirs METHOD=DIR [METHOD=DIR ...] \
-  [--gt-dir GT_DIR] \
-  [--lr-dir LR_DIR] \
-  [--ref-dirs NAME=DIR [NAME=DIR ...]] \
-  [--features FEATURES] \
-  [--siglip-model SIGLIP_MODEL] \
-  [--siglip-alpha SIGLIP_ALPHA] \
-  --output OUTPUT \
-  [--device {auto,cpu,cuda}] \
-  [--strict] \
-  [--log-level {DEBUG,INFO,WARNING,ERROR}]
+python scripts/get_image_features.py \
+  --sr-dirs PASD=data/PASD SUPIR=data/SUPIR RealESRGAN=data/RealESRGAN \
+  --gt-dir data/gt \
+  --lr-dir data/lr \
+  --ref-dirs bicubic=data/bicubic rlfn=data/RLFN span=data/SPAN \
+  --features fr,nr,vgg,resnet,siglip \
+  --output features/image_features.csv \
+  --device cuda
 ```
 
 ---
@@ -99,25 +117,12 @@ python3 get_image_features.py \
 Apply PCA to high-dimensional feature blocks such as `vgg_*` and `resnet_*` in CSV files produced in Step 1.
 
 ```bash
-python3 apply_pca.py \
-  --input INPUT \
-  --n-components N_COMPONENTS [N_COMPONENTS ...] \
-  [--blocks NAME=PREFIX [NAME=PREFIX ...]] \
-  [--output-dir OUTPUT_DIR] \
-  [--output-template OUTPUT_TEMPLATE] \
-  [--keep-original-blocks] \
-  [--fit-column FIT_COLUMN] \
-  [--fit-value FIT_VALUE] \
-  [--disable-auto-split] \
-  [--split-column SPLIT_COLUMN] \
-  [--train-label TRAIN_LABEL] \
-  [--test-label TEST_LABEL] \
-  [--test-size TEST_SIZE] \
-  [--split-seed SPLIT_SEED] \
-  [--group-column GROUP_COLUMN] \
-  [--group-fallback-column GROUP_FALLBACK_COLUMN] \
-  [--svd-solver {auto,full,covariance_eigh,arpack,randomized}] \
-  [--log-level {DEBUG,INFO,WARNING,ERROR}]
+python scripts/apply_pca.py \
+  --input features/image_features.csv \
+  --n-components 5 10 25 50 75 \
+  --test-size 0.2 \
+  --split-seed 42 \
+  --output-dir features/pca
 ```
 
 ---
@@ -128,16 +133,11 @@ Compute summary statistics for heatmaps stored as `.npy`, `.npy.gz`, or compatib
 Input directories can be passed as `PREFIX=DIR` to ensure stable sample naming.
 
 ```bash
-python3 compute_statistics.py \
-  --heatmap-dirs PREFIX=DIR [PREFIX=DIR ...] \
-  --output OUTPUT \
-  [--percentiles PERCENTILES [PERCENTILES ...]] \
-  [--area-thresholds AREA_THRESHOLDS [AREA_THRESHOLDS ...]] \
-  [--extensions EXTENSIONS [EXTENSIONS ...]] \
-  [--recursive] \
-  [--strict] \
-  [--no-progress] \
-  [--log-level {DEBUG,INFO,WARNING,ERROR}]
+python scripts/compute_statistics.py \
+  --heatmap-dirs PASD=data/heatmaps/PASD SUPIR=data/heatmaps/SUPIR RealESRGAN=data/heatmaps/RealESRGAN \
+  --output stats/grounding_stats@coarse.csv \
+  --percentiles 5 95 \
+  --area-thresholds 0 0.5 0.75
 ```
 
 ---
