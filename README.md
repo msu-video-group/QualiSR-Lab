@@ -23,7 +23,7 @@ The sections below describe the required data format and the workflow.
 
 Example of a valid dataset layout:
 
-```text
+```
 data/
 ├── gt/
 │   ├── 0000001.png        # GT images, shape: (H, W, 3)
@@ -73,7 +73,7 @@ test_case,method,score_norm
 
 ### Step 0 (optional): Prepare reference images
 
-Produce RLFN / SPAN / bicubic images for LR + SR pairs (used to compute FR metrics).
+Produce [RLFN](https://github.com/bytedance/RLFN) / [SPAN](https://github.com/zononhzy/SPAN) / bicubic images for LR + SR pairs (used to compute FR metrics).
 
 ```bash
 python scripts/make_reference.py \
@@ -90,7 +90,7 @@ python scripts/make_reference.py \
 
 ### Step 1: Compute image features
 
-Compute FR / NR / VGG / ResNet / SigLIP features for SR images and save them into a single CSV file.
+Compute FR / NR / [VGG](https://arxiv.org/abs/1409.1556) / [ResNet](https://arxiv.org/abs/1512.03385) / [SigLIP](https://arxiv.org/abs/2303.15343) features for SR images and save them into a single CSV file.
 
 SR methods are passed as `METHOD=DIR`.  
 Reference image filenames are expected in the format:
@@ -114,7 +114,7 @@ python scripts/get_image_features.py \
 
 ### Step 2: Apply PCA to high-dimensional features
 
-Apply PCA to high-dimensional feature blocks such as `vgg_*` and `resnet_*` in CSV files produced in Step 1.
+Apply Principal Component Analysis (PCA) to high-dimensional feature blocks such as `vgg_*` and `resnet_*` in CSV files produced in Step 1.
 
 ```bash
 python scripts/apply_pca.py \
@@ -169,15 +169,15 @@ This section summarizes the feature groups used in the pipeline.
 
 NR metrics are widely used in SR-IQA because they do not require a perfect high-resolution reference image. Their main limitation is that they ignore information available in the input LR image, which may cause them to miss or even reward artifacts introduced by SR models.
 
-Recommended NR metrics in this project, based on results from the SR Metrics Benchmark:
+Recommended NR metrics in this project, based on results from the [SR Metrics Benchmark](https://videoprocessing.ai/benchmarks/super-resolution-metrics.html):
 
-- Q-Align
-- MUSIQ
-- ARNIQA
-- UNIQUE
-- PaQ2PiQ
+- [Q-Align](https://github.com/Q-Future/Q-Align)
+- [MUSIQ](https://github.com/anse3832/MUSIQ)
+- [ARNIQA](https://github.com/miccunifi/ARNIQA)
+- [UNIQUE](https://github.com/zwx8981/UNIQUE)
+- [PaQ2PiQ](https://github.com/baidut/paq2piq)
 
-These metrics are computed through the **PyIQA** interface, so the list can be changed easily.
+These metrics are computed through the [**PyIQA**](https://github.com/chaofengc/IQA-PyTorch) interface, so the list can be changed easily.
 
 ---
 
@@ -190,19 +190,19 @@ When true GT images are unavailable, the project uses **quasi-GT** references: i
 Reference upscaling methods used here:
 
 - bicubic interpolation
-- SPAN
-- RLFN
+- [SPAN](https://github.com/zononhzy/SPAN)
+- [RLFN](https://github.com/bytedance/RLFN)
 
-Recommended FR metrics in this project, based on results from the SR Metrics Benchmark:
+Recommended FR metrics in this project, based on results from the [SR Metrics Benchmark](https://videoprocessing.ai/benchmarks/super-resolution-metrics.html):
 
-- LPIPS-VGG
-- STLPIPS-VGG
-- PieAPP
-- AHIQ
-- PSNR
-- SSIM
+- [LPIPS-VGG](https://github.com/richzhang/perceptualsimilarity)
+- [STLPIPS-VGG](https://github.com/abhijay9/ShiftTolerant-LPIPS)
+- [PieAPP](https://github.com/prashnani/PerceptualImageError)
+- [AHIQ](https://github.com/IIGROUP/AHIQ)
+- [PSNR](https://en.wikipedia.org/wiki/Peak_signal-to-noise_ratio)
+- [SSIM](https://ece.uwaterloo.ca/~z70wang/publications/ssim.html)
 
-These metrics are also computed through **PyIQA**.
+These metrics are also computed through [**PyIQA**](https://github.com/chaofengc/IQA-PyTorch).
 
 ---
 
@@ -212,11 +212,11 @@ Feature embeddings from pretrained encoders can capture semantic and perceptual 
 
 This project uses features extracted from:
 
-- VGG
-- ResNet
-- SigLIP
+- [VGG](https://arxiv.org/abs/1409.1556)
+- [ResNet](https://arxiv.org/abs/1512.03385)
+- [SigLIP](https://arxiv.org/abs/2303.15343)
 
-Because these embeddings are often high-dimensional, PCA can be applied before training regressors.
+Because these embeddings are often high-dimensional, Principal Component Analysis (PCA) can be applied before training regressors.
 
 ---
 
@@ -238,6 +238,7 @@ The project extracts the following summary statistics from artifact masks:
 - std
 - percentiles
 - thresholded artifact area
+
 
 <!-- ---
 

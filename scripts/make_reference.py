@@ -10,8 +10,8 @@ Typical usage:
       --out-root /data/references \
       --refs bicubic rlfn span \
       --scale 4 \
-      --rlfn-script ./realtimeSR/RLFN/inference-RLFN.py --rlfn-ckpt ./realtimeSR/RLFN/rlfn-tuned-4x.pth \
-      --span-script ./realtimeSR/SPAN/inference-SPAN.py --span-ckpt ./realtimeSR/SPAN/span-tuned-4x.pth
+      --rlfn-script ./realtime_sr/RLFN/inference-RLFN.py --rlfn-ckpt ./realtime_sr/RLFN/rlfn-tuned-4x.pth \
+      --span-script ./realtime_sr/SPAN/inference-SPAN.py --span-ckpt ./realtime_sr/SPAN/span-tuned-4x.pth
 """
 
 from __future__ import annotations

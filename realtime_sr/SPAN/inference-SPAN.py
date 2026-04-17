@@ -270,7 +270,7 @@ def main():
     image_path = args.image
     out_path = args.output
 
-    network = SPAN(3, 3, upscale=4, feature_channels=48).cuda()
+    network = SPAN(3, 3, upscale=args.scale, feature_channels=48).cuda()
 
     state_dict = torch.load(ckpt_path)
     
