@@ -1,8 +1,8 @@
-# Reduced-Reference IQA for Super-Resolution
+# QualiSR-Lab: Reduced-Reference IQA for Super-Resolution
 
 ## Overview
 
-This project studies which features extracted from Low-Resolution (LR) and Super-Resolution (SR) images are most informative for Image Quality Assessment (IQA).
+This project studies which features extracted from Low-Resolution (LR) and Super-Resolution (SR) images are most informative for Image Quality Assessment (IQA). Its purpose is to assist researchers in studying the best features for their upscaled image quality metrics by providing a pipeline to extract the features and build a comprehensive graphical summary on their contribution to IQA and correlation of the resulting metric with human scores.
 
 The proposed pipeline is:
 
@@ -69,7 +69,7 @@ test_case,method,score_norm
 ...
 ```
 
-We provide a free sample dataset that follows these guidelines. Please look at `dataset/readme.md` for details on downloading and using it. Sample features in this repository are precomputed on this data.
+We provide a free sample [dataset](https://drive.google.com/file/d/1NeGiwWQECTZMxVhJ5ZALxQ5nzRYkz4-E/view?usp=sharing) that follows the guidelines above. Please address `dataset/readme.md` for details on downloading and using it. Sample features in this repository are precomputed on this data.
 
 ---
 
