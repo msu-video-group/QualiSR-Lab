@@ -1,6 +1,10 @@
-# QualiSR-Lab: Reduced-Reference IQA for Super-Resolution
+# QualiSR-Lab: Reduced-Reference IQA for SR
 
-## Overview
+[Oleg Ryabinin](https://orcid.org/0009-0008-3153-4183)<sup>1,2</sup> | [Evgeney Bogatyrev](https://orcid.org/0000-0002-6173-3561)<sup>1,2</sup> | [Dmitriy Vatolin](https://orcid.org/0000-0002-8893-9340)<sup>1,2,3</sup>
+
+<sup>1</sup>Moscow State University, <sup>2</sup>Graphics & Media Lab, <sup>3</sup>Institute of Artificial Intelligence
+
+## 🔎 Overview
 
 This project studies which features extracted from Low-Resolution (LR) and Super-Resolution (SR) images are most informative for Image Quality Assessment (IQA). Its purpose is to assist researchers in studying the best features for their upscaled image quality metrics by providing a pipeline to extract the features and build a comprehensive graphical summary on their contribution to IQA and correlation of the resulting metric with human scores.
 
@@ -19,7 +23,7 @@ The sections below describe the required data format and the workflow.
 
 ---
 
-## Dataset Structure
+## ⚙️ Dataset Structure
 
 Example of a valid dataset layout:
 
@@ -73,7 +77,7 @@ We provide a free sample [dataset](https://drive.google.com/file/d/1NeGiwWQECTZM
 
 ---
 
-## Workflow
+## 🚀 Workflow
 
 ### Step 0 (optional): Prepare reference images
 
@@ -159,13 +163,13 @@ The first notebook cell describes the workflow for running experiments individua
 Example outputs:
 
 <p float="left">
-  <img src="plots/example@pca5/all_models_importances.png" alt="Feature importances" width="700"/>
+  <img src="plots/example@pca5/all_models_importances.png" alt="Feature importances" width="600"/>
   <img src="plots/example@pca5/correlations.png" alt="Correlations" width="550"/>
 </p>
 
 ---
 
-## Feature Types
+## 🔬 Feature Types
 
 This section summarizes the feature groups used in the pipeline.
 
