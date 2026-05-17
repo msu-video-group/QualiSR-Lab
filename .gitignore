@@ -194,7 +194,5 @@ dataset/ref
 dataset/sr
 dataset/labels.csv
 
-features/image_features.csv
-
 plots/test*
 configs/test*

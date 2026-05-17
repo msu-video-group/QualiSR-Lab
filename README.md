@@ -29,21 +29,74 @@ The sections below describe the required data format and the workflow.
 
 ---
 
-## 🚀 Workflow
+## 🐌 Quickstart With Precomputed Features
+
+The fastest smoke test uses the precomputed CSV files already tracked in this
+repository.
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -e ".[regressors]"
+qualisr-run-regressors --config configs/default.json
 ```
+
+Or build Docker image:
+
+```bash
+docker build -t qualisr-lab .
+docker run --rm qualisr-lab
+```
+
+You can run any of the following commands inside the Docker container:
+
+```bash
+docker run --rm -it --mount type=bind,source="${PWD}",target=/workspace qualisr-lab bash
+qualisr --help
+qualisr-run-regressors --config configs/default.json
+
+```
+
+---
+
+## 🛠️ Installation Options
+
+
+For the regression pipeline only:
+
+```bash
+python -m pip install -e ".[regressors]"
+```
+
+For full feature extraction on CPU:
+
+```bash
+python -m pip install -e ".[features,regressors]"
+```
+
+For development:
+
+```bash
+python -m pip install -e ".[dev,regressors]"
+pytest
+```
+
+The legacy fully pinned environment is kept in `requirements.txt`.
+
+See [dataset/readme.md](dataset/readme.md) for dataset download notes and
+publication-readiness metadata that still needs archival documentation.
+
+---
+
+## 🚀 Workflow
 
 ### Step 0 (optional): Prepare reference images
 
 Produce [RLFN](https://github.com/bytedance/RLFN) / [SPAN](https://github.com/zononhzy/SPAN) / bicubic images for LR + SR pairs (used to compute FR metrics).
 
 ```bash
-python scripts/make_reference.py \
+qualisr-make-reference \
   --lr-dir dataset/lr \
   --sr-dirs PASD=dataset/sr/PASD SUPIR=dataset/sr/SUPIR RealESRGAN=dataset/sr/RealESRGAN \
-  --out-root dataset/ref/ \
+  --out-root dataset/ref \
   --refs bicubic rlfn span \
   --scale 4 \
   --rlfn-script realtime_sr/RLFN/inference-RLFN.py \
@@ -51,6 +104,7 @@ python scripts/make_reference.py \
   --span-script realtime_sr/SPAN/inference-SPAN.py \
   --span-ckpt realtime_sr/SPAN/span-tuned-4x.pth
 ```
+
 
 ### Step 1: Compute image features
 
@@ -64,7 +118,7 @@ Reference image filenames are expected in the format:
 ```
 
 ```bash
-python scripts/get_image_features.py \
+qualisr-extract-features \
   --sr-dirs PASD=dataset/sr/PASD SUPIR=dataset/sr/SUPIR RealESRGAN=dataset/sr/RealESRGAN \
   --gt-dir dataset/hr \
   --lr-dir dataset/lr \
@@ -81,7 +135,7 @@ python scripts/get_image_features.py \
 Apply Principal Component Analysis (PCA) to high-dimensional feature blocks such as `vgg_*` and `resnet_*` in CSV files produced in Step 1.
 
 ```bash
-python scripts/apply_pca.py \
+qualisr-apply-pca \
   --input features/image_features.csv \
   --blocks vgg=vgg_ resnet=resnet_ \
   --n-components 5 10 25 50 75 \
@@ -98,7 +152,7 @@ Compute summary statistics for heatmaps stored as `.npy`, `.npy.gz`, or compatib
 Input directories can be passed as `PREFIX=DIR` to ensure stable sample naming.
 
 ```bash
-python scripts/compute_statistics.py \
+qualisr-compute-stats \
   --heatmap-dirs PASD=dataset/heatmaps/PASD SUPIR=dataset/heatmaps/SUPIR RealESRGAN=dataset/heatmaps/RealESRGAN \
   --output features/stats@grounding.csv \
   --percentiles 5 95 \
@@ -109,7 +163,13 @@ python scripts/compute_statistics.py \
 
 ### Step 4: Fit regressors and analyze results
 
-The main notebook for experiments is `regressors.ipynb`. It trains regressors, evaluates them, and visualizes:
+Train regressors and produce summary on feature importances and correlations.
+
+```bash
+qualisr-run-regressors --config configs/default.json
+```
+
+You can also use `regressors.ipynb` notebook for experiments. It trains regressors, evaluates them, and visualizes:
 
 - feature importances,
 - PLCC/SRCC correlations,
@@ -201,3 +261,6 @@ The project extracts the following summary statistics from artifact masks:
 - std
 - percentiles
 - thresholded artifact area
+
+## 🎫 License
+This project is released under the [MIT license](LICENSE).
