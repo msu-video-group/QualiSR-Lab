@@ -17,6 +17,7 @@ COPY scripts ./scripts
 COPY configs ./configs
 COPY scores ./scores
 COPY features ./features
+COPY realtime_sr ./realtime_sr
 
 RUN python -m pip install --upgrade pip \
     && python -m pip install ".[regressors]" \
