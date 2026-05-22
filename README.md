@@ -190,7 +190,7 @@ Example outputs:
 
 ## 🔬 Feature Types
 
-This section summarizes the feature groups used in the pipeline.
+This section summarizes the feature groups used in the pipeline. For references and guidelines to adding custom features, address [features/readme.md](features/readme.md).
 
 ### No-Reference (NR) metrics
 
@@ -204,7 +204,7 @@ Recommended NR metrics in this project, based on results from the [SR Metrics Be
 - [UNIQUE](https://github.com/zwx8981/UNIQUE)
 - [PaQ2PiQ](https://github.com/baidut/paq2piq)
 
-These metrics are computed through the [**PyIQA**](https://github.com/chaofengc/IQA-PyTorch) interface, so the list can be changed easily.
+These metrics are computed through the [PyIQA](https://github.com/chaofengc/IQA-PyTorch) interface, so the list can be changed easily.
 
 ---
 
@@ -229,7 +229,7 @@ Recommended FR metrics in this project, based on results from the [SR Metrics Be
 - [PSNR](https://en.wikipedia.org/wiki/Peak_signal-to-noise_ratio)
 - [SSIM](https://ece.uwaterloo.ca/~z70wang/publications/ssim.html)
 
-These metrics are also computed through [**PyIQA**](https://github.com/chaofengc/IQA-PyTorch).
+These metrics are also computed through [PyIQA](https://github.com/chaofengc/IQA-PyTorch).
 
 ---
 

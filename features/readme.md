@@ -1,6 +1,18 @@
-# References
+# Image Features
 
-## No-Reference (NR) IQA metrics
+## ⚙️ Adding custom features
+
+QualiSR-Lab is designed to be easy to extend with new feature groups.
+
+- **FR/NR metrics via PyIQA.**  
+  If a metric is available in [PyIQA](https://github.com/chaofengc/IQA-PyTorch), you can add or remove it by editing the corresponding metric lists in [`scripts/get_image_features.py`](../scripts/get_image_features.py).
+
+- **External features from CSV.**  
+  Any custom features can be prepared separately and stored in `.csv` files. These files can then be referenced in the configuration file and used directly for regressor training.
+
+## 📌 References
+
+### No-Reference (NR) IQA metrics
 
 1. **Q-Align: Teaching LMMs for Visual Scoring via Discrete Text-Defined Levels**  
    Haoning Wu, Zicheng Zhang, Weixia Zhang, Chaofeng Chen, Liang Liao, Chunyi Li, Yixuan Gao, Annan Wang, Erli Zhang, Wenxiu Sun, Qiong Yan, Xiongkuo Min, Guangtao Zhai, Weisi Lin. 2023.  
@@ -22,7 +34,7 @@
    Zhenqiang Ying, Haoran Niu, Praful Gupta, Dhruv Mahajan, Deepti Ghadiyaram, Alan Bovik. 2020.  
    arXiv: https://arxiv.org/abs/1912.10088  
 
-## Full-Reference (FR) IQA metrics
+### Full-Reference (FR) IQA metrics
 
 6. **The Unreasonable Effectiveness of Deep Features as a Perceptual Metric**  
    Richard Zhang, Phillip Isola, Alexei A. Efros, Eli Shechtman, Oliver Wang. 2018.  
@@ -44,7 +56,7 @@
     Zhou Wang, Alan C. Bovik, Hamid R. Sheikh, Eero P. Simoncelli. 2004.  
     Official page: https://ece.uwaterloo.ca/~z70wang/publications/ssim.html  
 
-## Pretrained encoder backbones
+### Pretrained encoder backbones
 
 11. **Very Deep Convolutional Networks for Large-Scale Image Recognition**  
     Karen Simonyan, Andrew Zisserman. 2015.  
@@ -58,7 +70,7 @@
     Xiaohua Zhai, Basil Mustafa, Alexander Kolesnikov, Lucas Beyer. 2023.  
     arXiv: https://arxiv.org/abs/2303.15343
 
-## Reference / quasi-GT upscaling methods
+### Reference / quasi-GT upscaling methods
 
 14. **Swift Parameter-free Attention Network for Efficient Super-Resolution**  
     Cheng Wan, Hongyuan Yu, Zhiqi Li, Yihang Chen, Yajun Zou, Yuqing Liu, Xuanwu Yin, Kunlong Zuo. 2023.  
