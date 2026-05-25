@@ -1,8 +1,10 @@
 import argparse
 import logging
+import time
 from collections import defaultdict
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import TypeVar
 
 import numpy as np
 import pandas as pd
@@ -11,7 +13,6 @@ import torch.nn.functional as F
 from PIL import Image
 from torchvision import models, transforms
 from torchvision.transforms import functional as TF
-
 
 FR_METRICS: Sequence[str] = (
     "psnr",
@@ -38,14 +39,121 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
 
 
 LOGGER = logging.getLogger("get_image_features")
+T = TypeVar("T")
+
+
+class FeatureProfiler:
+    def __init__(self) -> None:
+        self.records: dict[str, dict[str, float]] = {}
+
+    def record_runtime(self, feature: str, seconds: float, samples: int = 1, feature_count: int = 1) -> None:
+        record = self.records.setdefault(
+            feature,
+            {
+                "total_runtime_sec": 0.0,
+                "samples": 0.0,
+                "feature_count": float(feature_count),
+                "flops_total": 0.0,
+                "flops_samples": 0.0,
+            },
+        )
+        record["total_runtime_sec"] += seconds
+        record["samples"] += samples
+        record["feature_count"] = max(record["feature_count"], float(feature_count))
+
+    def record_flops(self, feature: str, flops: float, samples: int = 1, feature_count: int = 1) -> None:
+        record = self.records.setdefault(
+            feature,
+            {
+                "total_runtime_sec": 0.0,
+                "samples": 0.0,
+                "feature_count": float(feature_count),
+                "flops_total": 0.0,
+                "flops_samples": 0.0,
+            },
+        )
+        record["flops_total"] += flops
+        record["flops_samples"] += samples
+        record["feature_count"] = max(record["feature_count"], float(feature_count))
+
+    def to_frame(self) -> pd.DataFrame:
+        rows = []
+        for feature, record in sorted(self.records.items()):
+            samples = record["samples"]
+            flops_samples = record["flops_samples"]
+            rows.append(
+                {
+                    "feature": feature,
+                    "feature_count": int(record["feature_count"]),
+                    "samples": int(samples),
+                    "mean_runtime_sec": record["total_runtime_sec"] / samples if samples else np.nan,
+                    "total_runtime_sec": record["total_runtime_sec"],
+                    "mean_flops": record["flops_total"] / flops_samples if flops_samples else np.nan,
+                    "total_profiled_flops": record["flops_total"] if flops_samples else np.nan,
+                    "flops_profiled_samples": int(flops_samples),
+                }
+            )
+        return pd.DataFrame(rows)
+
+
+def sync_device(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+
+def timed_call(
+    profiler: FeatureProfiler | None,
+    feature: str,
+    fn: Callable[[], T],
+    device: torch.device,
+    feature_count: int = 1,
+    samples: int = 1,
+) -> T:
+    if profiler is None:
+        with torch.no_grad():
+            return fn()
+
+    sync_device(device)
+    start = time.perf_counter()
+    with torch.no_grad():
+        result = fn()
+    sync_device(device)
+    profiler.record_runtime(feature, time.perf_counter() - start, samples=samples, feature_count=feature_count)
+    return result
+
+
+def profile_torch_flops(
+    profiler: FeatureProfiler | None,
+    feature: str,
+    fn: Callable[[], object],
+    device: torch.device,
+    feature_count: int = 1,
+) -> None:
+    if profiler is None:
+        return
+
+    try:
+        activities = [torch.profiler.ProfilerActivity.CPU]
+        if device.type == "cuda":
+            activities.append(torch.profiler.ProfilerActivity.CUDA)
+
+        with torch.profiler.profile(activities=activities, with_flops=True) as prof:
+            with torch.no_grad():
+                fn()
+            sync_device(device)
+
+        flops = sum(float(getattr(event, "flops", 0) or 0) for event in prof.key_averages())
+        profiler.record_flops(feature, flops, feature_count=feature_count)
+    except Exception as exc:
+        LOGGER.warning("FLOPs profiling failed for feature '%s': %s", feature, exc)
 
 
 class DirectoryIndex:
     def __init__(self, directory: Path) -> None:
         self.directory = directory
-        self.files: List[Path] = []
-        self.by_name: Dict[str, Path] = {}
-        self.by_stem: Dict[str, List[Path]] = defaultdict(list)
+        self.files: list[Path] = []
+        self.by_name: dict[str, Path] = {}
+        self.by_stem: dict[str, list[Path]] = defaultdict(list)
         self._index()
 
     def _index(self) -> None:
@@ -59,14 +167,14 @@ class DirectoryIndex:
         for stem in self.by_stem:
             self.by_stem[stem].sort(key=lambda p: p.name.lower())
 
-    def find_same_name(self, source: Path) -> Optional[Path]:
+    def find_same_name(self, source: Path) -> Path | None:
         exact = self.by_name.get(source.name.lower())
         if exact is not None:
             return exact
 
         return self._pick_candidate(self.by_stem.get(source.stem.lower(), []), source.suffix.lower())
 
-    def find_ref_name(self, source: Path, sr_method: str, ref_name: str) -> Optional[Path]:
+    def find_ref_name(self, source: Path, sr_method: str, ref_name: str) -> Path | None:
         expected_stem = f"{source.stem}@{sr_method}@{ref_name}".lower()
         direct = self._pick_candidate(self.by_stem.get(expected_stem, []), source.suffix.lower())
         if direct is not None:
@@ -74,7 +182,7 @@ class DirectoryIndex:
 
         suffix = f"@{sr_method}@{ref_name}".lower()
         source_stem = source.stem.lower()
-        candidates: List[Path] = []
+        candidates: list[Path] = []
         for stem_key, paths in self.by_stem.items():
             if stem_key.startswith(source_stem) and stem_key.endswith(suffix):
                 candidates.extend(paths)
@@ -82,7 +190,7 @@ class DirectoryIndex:
         return self._pick_candidate(candidates, source.suffix.lower())
 
     @staticmethod
-    def _pick_candidate(candidates: Sequence[Path], preferred_ext: str) -> Optional[Path]:
+    def _pick_candidate(candidates: Sequence[Path], preferred_ext: str) -> Path | None:
         if not candidates:
             return None
 
@@ -93,8 +201,8 @@ class DirectoryIndex:
         return sorted(candidates, key=lambda p: p.name.lower())[0]
 
 
-def parse_named_directories(specs: Iterable[str], flag_name: str) -> Dict[str, Path]:
-    parsed: Dict[str, Path] = {}
+def parse_named_directories(specs: Iterable[str], flag_name: str) -> dict[str, Path]:
+    parsed: dict[str, Path] = {}
 
     for spec in specs:
         if "=" in spec:
@@ -120,7 +228,7 @@ def parse_named_directories(specs: Iterable[str], flag_name: str) -> Dict[str, P
     return parsed
 
 
-def require_existing_directories(named_dirs: Dict[str, Path], flag_name: str) -> None:
+def require_existing_directories(named_dirs: dict[str, Path], flag_name: str) -> None:
     for name, directory in named_dirs.items():
         if not directory.exists() or not directory.is_dir():
             raise FileNotFoundError(f"{flag_name} '{name}' points to missing directory: {directory}")
@@ -156,7 +264,7 @@ def align_fr_images(
     ref_path: Path,
     ref_name: str,
     strict: bool,
-) -> Tuple[Image.Image, Image.Image]:
+) -> tuple[Image.Image, Image.Image]:
     sr_width, sr_height = sr_image.size
     ref_width, ref_height = ref_image.size
 
@@ -192,7 +300,7 @@ def align_fr_images(
     return cropped_sr, cropped_ref
 
 
-def init_fr_models(device: torch.device) -> Dict[str, object]:
+def init_fr_models(device: torch.device) -> dict[str, object]:
     import pyiqa
 
     models_dict = {}
@@ -202,7 +310,7 @@ def init_fr_models(device: torch.device) -> Dict[str, object]:
     return models_dict
 
 
-def init_nr_models(device: torch.device) -> Dict[str, object]:
+def init_nr_models(device: torch.device) -> dict[str, object]:
     import pyiqa
 
     models_dict = {}
@@ -212,7 +320,7 @@ def init_nr_models(device: torch.device) -> Dict[str, object]:
     return models_dict
 
 
-def init_vgg(device: torch.device) -> Tuple[torch.nn.Module, transforms.Compose]:
+def init_vgg(device: torch.device) -> tuple[torch.nn.Module, transforms.Compose]:
     LOGGER.info("Initializing VGG16 backbone")
     weights = models.VGG16_Weights.IMAGENET1K_V1
     model = models.vgg16(weights=weights).features.to(device)
@@ -228,7 +336,7 @@ def init_vgg(device: torch.device) -> Tuple[torch.nn.Module, transforms.Compose]
     return model, transform
 
 
-def init_resnet(device: torch.device) -> Tuple[torch.nn.Module, transforms.Compose]:
+def init_resnet(device: torch.device) -> tuple[torch.nn.Module, transforms.Compose]:
     LOGGER.info("Initializing ResNet50 backbone")
     weights = models.ResNet50_Weights.IMAGENET1K_V2
     model = models.resnet50(weights=weights)
@@ -246,7 +354,7 @@ def init_resnet(device: torch.device) -> Tuple[torch.nn.Module, transforms.Compo
     return model, transform
 
 
-def init_siglip(model_name: str, device: torch.device) -> Tuple[object, object]:
+def init_siglip(model_name: str, device: torch.device) -> tuple[object, object]:
     from transformers import AutoModel, AutoProcessor
 
     LOGGER.info("Initializing SigLIP model: %s", model_name)
@@ -289,7 +397,7 @@ def compute_siglip_scores(
     processor: object,
     device: torch.device,
     alpha: float,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     lr_upscaled = lr_image.resize(sr_image.size, Image.Resampling.BICUBIC)
 
     lr_feat = siglip_embedding(lr_image, model, processor, device)
@@ -307,7 +415,7 @@ def compute_siglip_scores(
     }
 
 
-def ensure_tensor(image_tensor: Optional[torch.Tensor], image_path: Optional[Path], device: torch.device) -> Optional[torch.Tensor]:
+def ensure_tensor(image_tensor: torch.Tensor | None, image_path: Path | None, device: torch.device) -> torch.Tensor | None:
     if image_tensor is not None or image_path is None:
         return image_tensor
 
@@ -315,7 +423,7 @@ def ensure_tensor(image_tensor: Optional[torch.Tensor], image_path: Optional[Pat
     return image_to_tensor(image, device)
 
 
-def parse_features(raw_features: str) -> List[str]:
+def parse_features(raw_features: str) -> list[str]:
     requested = []
     for part in raw_features.split(","):
         feature = part.strip().lower()
@@ -400,6 +508,27 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output", required=True, help="Output CSV file path.")
     parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Measure feature runtime and save a profile CSV.",
+    )
+    parser.add_argument(
+        "--profile-output",
+        default=None,
+        help=(
+            "Output CSV path for mean runtime/FLOPs per feature when profiling is enabled. "
+            "Default: <output_stem>_profile.csv."
+        ),
+    )
+    parser.add_argument(
+        "--profile-flops",
+        action="store_true",
+        help=(
+            "Estimate PyTorch FLOPs with torch.profiler in addition to runtime. "
+            "Implies --profile, reruns each profiled model call, and is slow."
+        ),
+    )
+    parser.add_argument(
         "--device",
         choices=("auto", "cpu", "cuda"),
         default="auto",
@@ -449,14 +578,14 @@ def main() -> None:
     require_existing_directories(sr_dirs, "--sr-dirs")
     require_existing_directories(ref_dirs, "--ref-dirs")
 
-    gt_index: Optional[DirectoryIndex] = None
+    gt_index: DirectoryIndex | None = None
     if args.gt_dir is not None:
         gt_path = Path(args.gt_dir).expanduser().resolve()
         if not gt_path.exists() or not gt_path.is_dir():
             raise FileNotFoundError(f"--gt-dir points to missing directory: {gt_path}")
         gt_index = DirectoryIndex(gt_path)
 
-    lr_index: Optional[DirectoryIndex] = None
+    lr_index: DirectoryIndex | None = None
     if args.lr_dir is not None:
         lr_path = Path(args.lr_dir).expanduser().resolve()
         if not lr_path.exists() or not lr_path.is_dir():
@@ -478,21 +607,21 @@ def main() -> None:
     total_sr_images = sum(len(index.files) for index in sr_indices.values())
     LOGGER.info("Found %d SR images across %d methods", total_sr_images, len(sr_indices))
 
-    fr_models: Optional[Dict[str, object]] = None
+    fr_models: dict[str, object] | None = None
     if "fr" in requested_features:
         fr_models = init_fr_models(device)
 
-    nr_models: Optional[Dict[str, object]] = None
+    nr_models: dict[str, object] | None = None
     if "nr" in requested_features:
         nr_models = init_nr_models(device)
 
-    vgg_model: Optional[torch.nn.Module] = None
-    vgg_transform: Optional[transforms.Compose] = None
+    vgg_model: torch.nn.Module | None = None
+    vgg_transform: transforms.Compose | None = None
     if "vgg" in requested_features:
         vgg_model, vgg_transform = init_vgg(device)
 
-    resnet_model: Optional[torch.nn.Module] = None
-    resnet_transform: Optional[transforms.Compose] = None
+    resnet_model: torch.nn.Module | None = None
+    resnet_transform: transforms.Compose | None = None
     if "resnet" in requested_features:
         resnet_model, resnet_transform = init_resnet(device)
 
@@ -501,8 +630,9 @@ def main() -> None:
     if "siglip" in requested_features:
         siglip_model, siglip_processor = init_siglip(args.siglip_model, device)
 
-    rows: List[Dict[str, float]] = []
+    rows: list[dict[str, float]] = []
     processed = 0
+    profiler = FeatureProfiler() if args.profile or args.profile_flops else None
 
     for sr_method, sr_index in sr_indices.items():
         LOGGER.info("Processing SR method '%s' (%d images)", sr_method, len(sr_index.files))
@@ -519,19 +649,19 @@ def main() -> None:
 
             sr_tensor = image_to_tensor(sr_image, device)
 
-            row: Dict[str, float] = {
+            row: dict[str, float] = {
                 "sample_id": f"{sr_method}:{sr_path.stem}",
                 "sr_method": sr_method,
                 "sr_filename": sr_path.name,
                 "sr_path": str(sr_path),
             }
 
-            gt_path: Optional[Path] = None
+            gt_path: Path | None = None
             if gt_index is not None:
                 gt_path = gt_index.find_same_name(sr_path)
                 row["gt_path"] = str(gt_path) if gt_path is not None else ""
 
-            lr_path: Optional[Path] = None
+            lr_path: Path | None = None
             if lr_index is not None:
                 lr_path = lr_index.find_same_name(sr_path)
                 row["lr_path"] = str(lr_path) if lr_path is not None else ""
@@ -539,8 +669,19 @@ def main() -> None:
             if "nr" in requested_features and nr_models is not None:
                 for metric_name, model in nr_models.items():
                     try:
-                        with torch.no_grad():
-                            row[metric_name] = float(model(sr_tensor).item())
+                        row[metric_name] = timed_call(
+                            profiler,
+                            metric_name,
+                            lambda model=model, sr_tensor=sr_tensor: float(model(sr_tensor).item()),
+                            device,
+                        )
+                        if args.profile_flops:
+                            profile_torch_flops(
+                                profiler,
+                                metric_name,
+                                lambda model=model, sr_tensor=sr_tensor: model(sr_tensor),
+                                device,
+                            )
                     except Exception as exc:
                         maybe_raise_or_warn(
                             f"NR metric '{metric_name}' failed on {sr_path.name}: {exc}",
@@ -549,7 +690,7 @@ def main() -> None:
                         row[metric_name] = np.nan
 
             if "fr" in requested_features and fr_models is not None:
-                fr_targets: List[Tuple[str, Optional[Path], str]] = []
+                fr_targets: list[tuple[str, Path | None, str]] = []
                 if gt_index is not None:
                     fr_targets.append(("gt", gt_path, "same-name"))
 
@@ -594,8 +735,23 @@ def main() -> None:
                     for metric_name, model in fr_models.items():
                         out_col = f"{metric_name}_{ref_name}"
                         try:
-                            with torch.no_grad():
-                                row[out_col] = float(model(sr_tensor_fr, ref_tensor).item())
+                            row[out_col] = timed_call(
+                                profiler,
+                                out_col,
+                                lambda model=model, sr_tensor_fr=sr_tensor_fr, ref_tensor=ref_tensor: float(
+                                    model(sr_tensor_fr, ref_tensor).item()
+                                ),
+                                device,
+                            )
+                            if args.profile_flops:
+                                profile_torch_flops(
+                                    profiler,
+                                    out_col,
+                                    lambda model=model, sr_tensor_fr=sr_tensor_fr, ref_tensor=ref_tensor: model(
+                                        sr_tensor_fr, ref_tensor
+                                    ),
+                                    device,
+                                )
                         except Exception as exc:
                             maybe_raise_or_warn(
                                 f"FR metric '{metric_name}' failed on {sr_path.name} vs {ref_path.name}: {exc}",
@@ -605,7 +761,26 @@ def main() -> None:
                 
             if "vgg" in requested_features and vgg_model is not None and vgg_transform is not None:
                 try:
-                    vgg_features = extract_pretrained_features(sr_image, vgg_model, vgg_transform, device)
+                    vgg_features = timed_call(
+                        profiler,
+                        "vgg",
+                        lambda sr_image=sr_image, vgg_model=vgg_model, vgg_transform=vgg_transform: (
+                            extract_pretrained_features(sr_image, vgg_model, vgg_transform, device)
+                        ),
+                        device,
+                    )
+                    if profiler is not None:
+                        profiler.records["vgg"]["feature_count"] = float(len(vgg_features))
+                    if args.profile_flops:
+                        profile_torch_flops(
+                            profiler,
+                            "vgg",
+                            lambda sr_image=sr_image, vgg_model=vgg_model, vgg_transform=vgg_transform: (
+                                extract_pretrained_features(sr_image, vgg_model, vgg_transform, device)
+                            ),
+                            device,
+                            feature_count=len(vgg_features),
+                        )
                     for index, value in enumerate(vgg_features):
                         row[f"vgg_{index:05d}"] = float(value)
                 except Exception as exc:
@@ -613,7 +788,26 @@ def main() -> None:
 
             if "resnet" in requested_features and resnet_model is not None and resnet_transform is not None:
                 try:
-                    resnet_features = extract_pretrained_features(sr_image, resnet_model, resnet_transform, device)
+                    resnet_features = timed_call(
+                        profiler,
+                        "resnet",
+                        lambda sr_image=sr_image, resnet_model=resnet_model, resnet_transform=resnet_transform: (
+                            extract_pretrained_features(sr_image, resnet_model, resnet_transform, device)
+                        ),
+                        device,
+                    )
+                    if profiler is not None:
+                        profiler.records["resnet"]["feature_count"] = float(len(resnet_features))
+                    if args.profile_flops:
+                        profile_torch_flops(
+                            profiler,
+                            "resnet",
+                            lambda sr_image=sr_image, resnet_model=resnet_model, resnet_transform=resnet_transform: (
+                                extract_pretrained_features(sr_image, resnet_model, resnet_transform, device)
+                            ),
+                            device,
+                            feature_count=len(resnet_features),
+                        )
                     for index, value in enumerate(resnet_features):
                         row[f"resnet_{index:05d}"] = float(value)
                 except Exception as exc:
@@ -628,14 +822,35 @@ def main() -> None:
                 else:
                     try:
                         lr_image = load_image_rgb(lr_path)
-                        siglip_scores = compute_siglip_scores(
-                            lr_image=lr_image,
-                            sr_image=sr_image,
-                            model=siglip_model,
-                            processor=siglip_processor,
-                            device=device,
-                            alpha=args.siglip_alpha,
+                        siglip_scores = timed_call(
+                            profiler,
+                            "siglip",
+                            lambda lr_image=lr_image, sr_image=sr_image: compute_siglip_scores(
+                                lr_image=lr_image,
+                                sr_image=sr_image,
+                                model=siglip_model,
+                                processor=siglip_processor,
+                                device=device,
+                                alpha=args.siglip_alpha,
+                            ),
+                            device,
+                            feature_count=3,
                         )
+                        if args.profile_flops:
+                            profile_torch_flops(
+                                profiler,
+                                "siglip",
+                                lambda lr_image=lr_image, sr_image=sr_image: compute_siglip_scores(
+                                    lr_image=lr_image,
+                                    sr_image=sr_image,
+                                    model=siglip_model,
+                                    processor=siglip_processor,
+                                    device=device,
+                                    alpha=args.siglip_alpha,
+                                ),
+                                device,
+                                feature_count=3,
+                            )
                         row.update(siglip_scores)
                     except Exception as exc:
                         maybe_raise_or_warn(f"SigLIP extraction failed on {sr_path.name}: {exc}", args.strict)
@@ -653,7 +868,16 @@ def main() -> None:
     if "gaussian" in requested_features:
         try:
             np.random.seed(NOISE_SEED)
-            sample = np.random.normal(size=(len(rows), NOISE_COMPONENTS))
+            sample = timed_call(
+                profiler,
+                "gaussian",
+                lambda: np.random.normal(size=(len(rows), NOISE_COMPONENTS)),
+                torch.device("cpu"),
+                feature_count=NOISE_COMPONENTS,
+                samples=max(len(rows), 1),
+            )
+            if profiler is not None:
+                profiler.record_flops("gaussian", float(len(rows) * NOISE_COMPONENTS), samples=max(len(rows), 1))
             sample = pd.DataFrame(sample, columns=[f"gaussian_{i}" for i in range(NOISE_COMPONENTS)])
             frame = pd.concat([frame, sample], axis=1)
         except Exception as exc:
@@ -662,7 +886,16 @@ def main() -> None:
     if "uniform" in requested_features:
         try:
             np.random.seed(NOISE_SEED)
-            sample = np.random.uniform(size=(len(rows), NOISE_COMPONENTS))
+            sample = timed_call(
+                profiler,
+                "uniform",
+                lambda: np.random.uniform(size=(len(rows), NOISE_COMPONENTS)),
+                torch.device("cpu"),
+                feature_count=NOISE_COMPONENTS,
+                samples=max(len(rows), 1),
+            )
+            if profiler is not None:
+                profiler.record_flops("uniform", float(len(rows) * NOISE_COMPONENTS), samples=max(len(rows), 1))
             sample = pd.DataFrame(sample, columns=[f"uniform_{i}" for i in range(NOISE_COMPONENTS)])
             frame = pd.concat([frame, sample], axis=1)
         except Exception as exc:
@@ -670,6 +903,16 @@ def main() -> None:
 
     frame.to_csv(output_path, index=False)
     LOGGER.info("Saved %d rows to %s", len(frame), output_path)
+
+    if profiler is not None:
+        profile_path = (
+            Path(args.profile_output).expanduser().resolve()
+            if args.profile_output is not None
+            else output_path.with_name(f"{output_path.stem}_profile.csv")
+        )
+        profile_frame = profiler.to_frame()
+        profile_frame.to_csv(profile_path, index=False)
+        LOGGER.info("Saved feature runtime/FLOPs profile to %s", profile_path)
 
 
 if __name__ == "__main__":

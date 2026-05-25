@@ -1,18 +1,75 @@
 import argparse
 import gzip
 import logging
+import time
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import TypeVar
 
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-
 LOGGER = logging.getLogger("compute_statistics")
 DEFAULT_PERCENTILES: Sequence[float] = (5.0, 95.0)
 DEFAULT_AREA_THRESHOLDS: Sequence[float] = (0.0, 0.5, 0.75)
 DEFAULT_EXTENSIONS: Sequence[str] = (".npy", ".gz")
+T = TypeVar("T")
+
+
+class FeatureProfiler:
+    def __init__(self) -> None:
+        self.records: dict[str, dict[str, float]] = {}
+
+    def record(self, feature: str, seconds: float, samples: int = 1, flops: float | None = None) -> None:
+        record = self.records.setdefault(
+            feature,
+            {
+                "total_runtime_sec": 0.0,
+                "samples": 0.0,
+                "flops_total": 0.0,
+                "flops_samples": 0.0,
+            },
+        )
+        record["total_runtime_sec"] += seconds
+        record["samples"] += samples
+        if flops is not None:
+            record["flops_total"] += flops
+            record["flops_samples"] += samples
+
+    def to_frame(self) -> pd.DataFrame:
+        rows = []
+        for feature, record in sorted(self.records.items()):
+            samples = record["samples"]
+            flops_samples = record["flops_samples"]
+            rows.append(
+                {
+                    "feature": feature,
+                    "feature_count": 1,
+                    "samples": int(samples),
+                    "mean_runtime_sec": record["total_runtime_sec"] / samples if samples else np.nan,
+                    "total_runtime_sec": record["total_runtime_sec"],
+                    "mean_flops": record["flops_total"] / flops_samples if flops_samples else np.nan,
+                    "total_profiled_flops": record["flops_total"] if flops_samples else np.nan,
+                    "flops_profiled_samples": int(flops_samples),
+                }
+            )
+        return pd.DataFrame(rows)
+
+
+def timed_stat(
+    profiler: FeatureProfiler | None,
+    feature: str,
+    fn: Callable[[], T],
+    flops: float | None = None,
+) -> T:
+    if profiler is None:
+        return fn()
+
+    start = time.perf_counter()
+    value = fn()
+    profiler.record(feature, time.perf_counter() - start, flops=flops)
+    return value
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,6 +91,19 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--output", required=True, help="Output CSV path.")
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Measure statistic runtime/FLOPs and save a profile CSV.",
+    )
+    parser.add_argument(
+        "--profile-output",
+        default=None,
+        help=(
+            "Output CSV path for mean runtime/FLOPs per statistic when profiling is enabled. "
+            "Default: <output_stem>_profile.csv."
+        ),
+    )
     parser.add_argument(
         "--percentiles",
         nargs="+",
@@ -78,8 +148,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def parse_named_directories(specs: Iterable[str]) -> Dict[str, Path]:
-    parsed: Dict[str, Path] = {}
+def parse_named_directories(specs: Iterable[str]) -> dict[str, Path]:
+    parsed: dict[str, Path] = {}
 
     for spec in specs:
         if "=" in spec:
@@ -101,13 +171,13 @@ def parse_named_directories(specs: Iterable[str]) -> Dict[str, Path]:
     return parsed
 
 
-def require_existing_directories(named_dirs: Dict[str, Path]) -> None:
+def require_existing_directories(named_dirs: dict[str, Path]) -> None:
     for prefix, directory in named_dirs.items():
         if not directory.exists() or not directory.is_dir():
             raise FileNotFoundError(f"Heatmap directory for prefix '{prefix}' does not exist: {directory}")
 
 
-def normalize_extensions(extensions: Sequence[str]) -> List[str]:
+def normalize_extensions(extensions: Sequence[str]) -> list[str]:
     normalized = []
     for ext in extensions:
         ext = ext.strip().lower()
@@ -128,7 +198,7 @@ def is_allowed_heatmap(path: Path, extensions: Sequence[str]) -> bool:
     return any(name.endswith(ext) for ext in extensions)
 
 
-def list_heatmap_files(directory: Path, recursive: bool, extensions: Sequence[str]) -> List[Path]:
+def list_heatmap_files(directory: Path, recursive: bool, extensions: Sequence[str]) -> list[Path]:
     iterator = directory.rglob("*") if recursive else directory.iterdir()
     files = [path for path in iterator if path.is_file() and is_allowed_heatmap(path, extensions)]
     files.sort(key=lambda p: str(p.relative_to(directory)).lower())
@@ -175,31 +245,48 @@ def compute_statistics_row(
     heatmap: np.ndarray,
     percentiles: Sequence[float],
     area_thresholds: Sequence[float],
-) -> Dict[str, float]:
-    row: Dict[str, float] = {
+    profiler: FeatureProfiler | None = None,
+) -> dict[str, float]:
+    size = heatmap.size
+    row: dict[str, float] = {
         "name": name,
-        "min": float(np.min(heatmap)),
-        "max": float(np.max(heatmap)),
-        "mean": float(np.mean(heatmap)),
-        "median": float(np.median(heatmap)),
-        "std": float(np.std(heatmap)),
+        "min": float(timed_stat(profiler, "min", lambda: np.min(heatmap), flops=max(size - 1, 0))),
+        "max": float(timed_stat(profiler, "max", lambda: np.max(heatmap), flops=max(size - 1, 0))),
+        "mean": float(timed_stat(profiler, "mean", lambda: np.mean(heatmap), flops=size)),
+        "median": float(timed_stat(profiler, "median", lambda: np.median(heatmap))),
+        "std": float(timed_stat(profiler, "std", lambda: np.std(heatmap), flops=3 * size)),
     }
 
     for percentile in percentiles:
-        row[format_percentile_name(percentile)] = float(np.percentile(heatmap, percentile))
+        column = format_percentile_name(percentile)
+        row[column] = float(timed_stat(profiler, column, lambda percentile=percentile: np.percentile(heatmap, percentile)))
 
-    size = heatmap.size
     for threshold in area_thresholds:
+        column = format_area_name(threshold)
         if np.isclose(threshold, 0.0):
-            ratio = float(np.count_nonzero(heatmap > 0.0) / size)
+            ratio = float(
+                timed_stat(
+                    profiler,
+                    column,
+                    lambda: np.count_nonzero(heatmap > 0.0) / size,
+                    flops=size,
+                )
+            )
         else:
-            ratio = float(np.count_nonzero(heatmap >= threshold) / size)
-        row[format_area_name(threshold)] = ratio
+            ratio = float(
+                timed_stat(
+                    profiler,
+                    column,
+                    lambda threshold=threshold: np.count_nonzero(heatmap >= threshold) / size,
+                    flops=size,
+                )
+            )
+        row[column] = ratio
 
     return row
 
 
-def build_output_columns(percentiles: Sequence[float], area_thresholds: Sequence[float]) -> List[str]:
+def build_output_columns(percentiles: Sequence[float], area_thresholds: Sequence[float]) -> list[str]:
     base_cols = ["name", "min", "max", "mean", "median", "std"]
     percentile_cols = [format_percentile_name(p) for p in percentiles]
     area_cols = [format_area_name(t) for t in area_thresholds]
@@ -222,7 +309,8 @@ def main() -> None:
 
     extensions = normalize_extensions(args.extensions)
 
-    rows: List[Dict[str, float]] = []
+    rows: list[dict[str, float]] = []
+    profiler = FeatureProfiler() if args.profile else None
     for prefix, directory in named_dirs.items():
         files = list_heatmap_files(directory, recursive=args.recursive, extensions=extensions)
         LOGGER.info("%s: found %d heatmaps in %s", prefix, len(files), directory)
@@ -247,6 +335,7 @@ def main() -> None:
                     heatmap=heatmap,
                     percentiles=percentiles,
                     area_thresholds=area_thresholds,
+                    profiler=profiler,
                 )
             except Exception as exc:
                 message = f"Failed to compute stats for {path}: {exc}"
@@ -266,6 +355,16 @@ def main() -> None:
     output_df.to_csv(output_path, index=False)
 
     LOGGER.info("Saved %d rows to %s", len(output_df), output_path)
+
+    if profiler is not None:
+        profile_path = (
+            Path(args.profile_output).expanduser().resolve()
+            if args.profile_output is not None
+            else output_path.with_name(f"{output_path.stem}_profile.csv")
+        )
+        profile_df = profiler.to_frame()
+        profile_df.to_csv(profile_path, index=False)
+        LOGGER.info("Saved statistics runtime/FLOPs profile to %s", profile_path)
 
 
 if __name__ == "__main__":

@@ -131,6 +131,8 @@ qualisr-extract-features \
   --device cuda
 ```
 
+Add `--profile` to save `<output_stem>_profile.csv` with mean runtime per feature. Add `--profile-flops` to also estimate PyTorch model FLOPs for features such as VGG, ResNet, SigLIP, and PyIQA metrics; this implies profiling and reruns model calls, so it is slower.
+
 ---
 
 ### Step 2: Apply PCA to high-dimensional features
@@ -161,6 +163,8 @@ qualisr-compute-stats \
   --percentiles 5 95 \
   --area-thresholds 0 0.5 0.75
 ```
+
+Add `--profile` to save `<output_stem>_profile.csv` with mean runtime and simple operation-count estimates for artifact statistics.
 
 ---
 
