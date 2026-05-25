@@ -30,7 +30,8 @@ NR_METRICS: Sequence[str] = (
     "paq2piq",
 )
 
-DEFAULT_FEATURES: Sequence[str] = ("fr", "nr", "vgg", "resnet", "siglip")
+NOISE_COMPONENTS = 5
+DEFAULT_FEATURES: Sequence[str] = ("fr", "nr", "vgg", "resnet", "siglip", "gaussian", "uniform")
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
 
 
@@ -370,7 +371,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--features",
         default=",".join(DEFAULT_FEATURES),
-        help="Comma-separated subset of features: fr,nr,vgg,resnet,siglip",
+        help="Comma-separated subset of features: fr,nr,vgg,resnet,siglip,gaussian,uniform.",
     )
     parser.add_argument(
         "--siglip-model",
@@ -382,6 +383,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.5,
         help="SigLIP final score weight (alpha * content + (1-alpha) * enhancement).",
+    )
+    parser.add_argument(
+        "--noise-components",
+        type=int,
+        default=NOISE_COMPONENTS,
+        help="Number of noise features (if gaussian/uniform specified in feature list).",
     )
     parser.add_argument("--output", required=True, help="Output CSV file path.")
     parser.add_argument(
@@ -631,6 +638,23 @@ def main() -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     frame = pd.DataFrame(rows)
+
+    if "gaussian" in requested_features:
+        try:
+            sample = np.random.normal(size=(len(rows), NOISE_COMPONENTS))
+            sample = pd.DataFrame(sample, columns=[f"gaussian_{i}" for i in range(NOISE_COMPONENTS)])
+            frame = pd.concat([frame, sample], axis=1)
+        except Exception as exc:
+            maybe_raise_or_warn(f"Gaussian noise sampling failed: {exc}", args.strict)
+
+    if "uniform" in requested_features:
+        try:
+            sample = np.random.uniform(size=(len(rows), NOISE_COMPONENTS))
+            sample = pd.DataFrame(sample, columns=[f"uniform_{i}" for i in range(NOISE_COMPONENTS)])
+            frame = pd.concat([frame, sample], axis=1)
+        except Exception as exc:
+            maybe_raise_or_warn(f"Uniform noise sampling failed: {exc}", args.strict)
+
     frame.to_csv(output_path, index=False)
     LOGGER.info("Saved %d rows to %s", len(frame), output_path)
 
