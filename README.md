@@ -266,4 +266,4 @@ The project extracts the following summary statistics from artifact masks:
 - thresholded artifact area
 
 ## 🎫 License
-This project is released under the [MIT license](LICENSE).
+This project is released under the [BSD-3-Clause license](LICENSE).
