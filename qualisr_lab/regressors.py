@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import time
 from copy import deepcopy
 from functools import reduce
 from pathlib import Path
@@ -22,6 +24,15 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.inspection import permutation_importance
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn.preprocessing import MinMaxScaler
+
+from qualisr_lab.profiling import (
+    build_regressor_profile_row,
+    build_regressor_total_profile,
+    is_regressor_profiling_enabled,
+    load_feature_profile_summary,
+    resolve_regressor_profile_path,
+    resolve_regressor_total_profile_path,
+)
 
 
 def deep_update(base: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
@@ -58,6 +69,36 @@ def safe_corr(y_true: Any, y_pred: Any) -> tuple[float, float]:
 def ensure_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def relativize_path_value(value: object) -> object:
+    if pd.isna(value):
+        return value
+
+    raw = str(value).strip()
+    if not raw:
+        return value
+
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        return raw
+
+    try:
+        return Path(os.path.relpath(path, start=Path.cwd())).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def relativize_path_columns(df: pd.DataFrame) -> pd.DataFrame:
+    result = df.copy()
+    path_columns = [
+        column
+        for column in result.columns
+        if str(column) == "path" or str(column).endswith("_path") or str(column).endswith("_paths")
+    ]
+    for column in path_columns:
+        result[column] = result[column].map(relativize_path_value)
+    return result
 
 
 def prepare_scores_file(cfg: dict[str, Any]) -> pd.DataFrame:
@@ -133,10 +174,15 @@ def resolve_feature_path(feat_name: str, cfg: dict[str, Any]) -> Path:
     if feat_name not in templates:
         raise KeyError(f"No path template configured for feature '{feat_name}'")
 
+    try:
+        pca_n = cfg["features"]["pca_n"]
+    except KeyError:
+        pca_n = 0
+
     return Path(
         templates[feat_name].format(
             features_root=cfg["paths"]["features_root"],
-            pca_n=cfg["features"]["pca_n"],
+            pca_n=pca_n,
         )
     )
 
@@ -208,7 +254,10 @@ def build_dataset(cfg: dict[str, Any]) -> pd.DataFrame:
 
     dataset = reduce(lambda left, right: pd.merge(left, right, on="name", how="inner"), frames)
 
-    existing_excludes = [c for c in cfg["features"]["exclude_columns"] if c in dataset.columns]
+    try:
+        existing_excludes = [c for c in cfg["features"]["exclude_columns"] if c in dataset.columns]
+    except KeyError:
+        existing_excludes = []
     if existing_excludes:
         dataset = dataset.drop(columns=existing_excludes)
 
@@ -417,6 +466,15 @@ def importance_legend_labels() -> dict[str, str]:
     }
 
 
+def model_display_name(model_name: str) -> str:
+    display_names = {
+        "randomforest": "Random Forest",
+        "xgb": "XGBoost",
+        "catboost": "CatBoost",
+    }
+    return display_names.get(model_name, model_name)
+
+
 def _missing_optional(package_name: str, extra_name: str) -> ImportError:
     return ImportError(
         f"Optional dependency '{package_name}' is required for this enabled model. "
@@ -583,29 +641,332 @@ def plot_correlations(
     return out_path
 
 
+def plot_prediction_scatter(
+    predictions_by_model: dict[str, pd.DataFrame],
+    out_dir: Path,
+    cfg: dict[str, Any],
+) -> Path | None:
+    if not predictions_by_model:
+        return None
+
+    with plt.rc_context(plot_rc_params(cfg)):
+        fig, ax = plt.subplots(figsize=tuple(cfg.get("plot", {}).get("scatter_figsize", [8.5, 5.5])))
+        ax.plot([0, 1], [0, 1], color="#9aa3ad", linestyle="--", linewidth=1.2)
+
+        for model_name, predictions in predictions_by_model.items():
+            ax.scatter(
+                predictions["mos"],
+                predictions["prediction"],
+                s=cfg.get("plot", {}).get("scatter_point_size", 100),
+                alpha=0.78,
+                edgecolors="white",
+                linewidths=0.6,
+                label=model_display_name(model_name),
+            )
+
+        ax.set_xlabel("MOS")
+        ax.set_ylabel("Prediction")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.set_aspect("equal", adjustable="box")
+        ax.grid(alpha=0.22)
+        ax.legend(loc="lower right", frameon=True, framealpha=0.88, edgecolor="#d6dbe1")
+        fig.tight_layout()
+
+    out_path = out_dir / "mos_prediction_scatter_all_regressors.png"
+    save_plot(fig, out_path, cfg)
+    plt.close(fig)
+    return out_path
+
+
+def compute_feature_correlations(X_test: pd.DataFrame, y_test: pd.Series) -> pd.DataFrame:
+    target = pd.to_numeric(y_test.reset_index(drop=True), errors="coerce")
+    rows = []
+
+    for feature_name in X_test.columns:
+        values = pd.to_numeric(X_test[feature_name].reset_index(drop=True), errors="coerce")
+        valid = target.notna() & values.notna()
+        if valid.any():
+            plcc, srcc = safe_corr(target[valid], values[valid])
+        else:
+            plcc, srcc = np.nan, np.nan
+
+        rows.append(
+            {
+                "feature": feature_name,
+                "family": feature_family(feature_name),
+                "plcc": plcc,
+                "srcc": srcc,
+                "abs_plcc": abs(plcc) if not np.isnan(plcc) else np.nan,
+                "abs_srcc": abs(srcc) if not np.isnan(srcc) else np.nan,
+            }
+        )
+
+    mean_values = X_test.apply(pd.to_numeric, errors="coerce").mean(axis=1).reset_index(drop=True)
+    valid = target.notna() & mean_values.notna()
+    if valid.any():
+        plcc, srcc = safe_corr(target[valid], mean_values[valid])
+    else:
+        plcc, srcc = np.nan, np.nan
+    rows.append(
+        {
+            "feature": "mean_features",
+            "family": "Mean",
+            "plcc": plcc,
+            "srcc": srcc,
+            "abs_plcc": abs(plcc) if not np.isnan(plcc) else np.nan,
+            "abs_srcc": abs(srcc) if not np.isnan(srcc) else np.nan,
+        }
+    )
+
+    return pd.DataFrame(rows).sort_values("abs_srcc", ascending=False).reset_index(drop=True)
+
+
+def plot_feature_correlations(
+    feature_correlations: pd.DataFrame,
+    results_df: pd.DataFrame,
+    out_dir: Path,
+    cfg: dict[str, Any],
+) -> Path | None:
+    if feature_correlations.empty:
+        return None
+
+    feature_rows = feature_correlations.rename(columns={"feature": "name", "family": "group"}).copy()
+    feature_rows["kind"] = "feature"
+    feature_rows.loc[feature_rows["group"] == "Mean", "kind"] = "mean_features"
+
+    if "source" in results_df.columns:
+        regressor_results = results_df[results_df["source"] == "regressor"].copy()
+    else:
+        regressor_results = pd.DataFrame()
+
+    if not regressor_results.empty:
+        regressor_rows = regressor_results.rename(columns={"model": "name"}).copy()
+        regressor_rows["group"] = "Regressor"
+        regressor_rows["kind"] = "regressor"
+        plot_df = pd.concat(
+            [
+                feature_rows[["name", "group", "kind", "plcc", "srcc"]],
+                regressor_rows[["name", "group", "kind", "plcc", "srcc"]],
+            ],
+            ignore_index=True,
+        )
+    else:
+        plot_df = feature_rows[["name", "group", "kind", "plcc", "srcc"]]
+
+    plot_df["abs_srcc"] = plot_df["srcc"].abs()
+    plot_df = plot_df.sort_values(["kind", "abs_srcc"], ascending=[True, True]).reset_index(drop=True)
+
+    y = np.arange(len(plot_df))
+    bar_height = 0.36
+    is_regressor = plot_df["kind"] == "regressor"
+    is_mean_features = plot_df["kind"] == "mean_features"
+    plcc_colors = np.select(
+        [is_regressor, is_mean_features],
+        ["#ffb347", "#8ecae6"],
+        default="#b8c0cc",
+    )
+    srcc_colors = np.select(
+        [is_regressor, is_mean_features],
+        ["#e85d04", "#219ebc"],
+        default="#4d5a68",
+    )
+
+    default_height = max(6, 0.34 * len(plot_df))
+    figsize = tuple(cfg.get("plot", {}).get("feature_correlation_figsize", [12, default_height]))
+
+    with plt.rc_context(plot_rc_params(cfg)):
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.barh(y - bar_height / 2, plot_df["plcc"], height=bar_height, color=plcc_colors)
+        ax.barh(y + bar_height / 2, plot_df["srcc"], height=bar_height, color=srcc_colors)
+        ax.set_yticks(y)
+        ax.set_yticklabels(plot_df["name"].tolist())
+        ax.set_xlim(-1, 1)
+        ax.axvline(0, color="#222222", linewidth=0.8)
+        ax.set_xlabel("Correlation")
+        ax.set_title("Feature, Mean Feature, and Regressor Correlations")
+
+        handles = [
+            mpatches.Patch(color="#b8c0cc", label="Feature PLCC"),
+            mpatches.Patch(color="#4d5a68", label="Feature SRCC"),
+            mpatches.Patch(color="#8ecae6", label="Mean Features PLCC"),
+            mpatches.Patch(color="#219ebc", label="Mean Features SRCC"),
+            mpatches.Patch(color="#ffb347", label="Regressor PLCC"),
+            mpatches.Patch(color="#e85d04", label="Regressor SRCC"),
+        ]
+        ax.legend(handles=handles, loc="lower right")
+        fig.tight_layout()
+
+    out_path = out_dir / "feature_correlations.png"
+    save_plot(fig, out_path, cfg)
+    plt.close(fig)
+    return out_path
+
+
+def feature_matrix_for_cross_correlation(X: pd.DataFrame, cfg: dict[str, Any]) -> pd.DataFrame:
+    numeric = X.apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
+    max_features = cfg.get("plot", {}).get("max_feature_correlation_matrix_features", 300)
+    if max_features is None or numeric.shape[1] <= int(max_features):
+        return numeric
+
+    variances = numeric.var(axis=0, skipna=True).sort_values(ascending=False)
+    selected = variances.head(int(max_features)).index.tolist()
+    return numeric[selected]
+
+
+def compute_feature_cross_correlations(X: pd.DataFrame, cfg: dict[str, Any]) -> pd.DataFrame:
+    matrix = feature_matrix_for_cross_correlation(X, cfg)
+    return matrix.corr(method="pearson")
+
+
+def plot_feature_cross_correlation_matrix(
+    cross_correlations: pd.DataFrame,
+    out_dir: Path,
+    cfg: dict[str, Any],
+) -> Path | None:
+    if cross_correlations.empty:
+        return None
+
+    n_features = len(cross_correlations)
+    default_size = min(max(7.0, 0.34 * n_features), 24.0)
+    figsize = tuple(cfg.get("plot", {}).get("feature_correlation_matrix_figsize", [default_size, default_size]))
+    label_limit = int(cfg.get("plot", {}).get("max_feature_correlation_matrix_labels", 45))
+    show_labels = n_features <= label_limit
+    label_font_size = cfg.get("plot", {}).get(
+        "feature_correlation_matrix_label_font_size",
+        min(10, plt.rcParams["font.size"]),
+    )
+
+    values = np.ma.masked_invalid(cross_correlations.to_numpy(dtype=float))
+    cmap = plt.get_cmap("coolwarm").copy()
+    cmap.set_bad("#eeeeee")
+
+    with plt.rc_context(plot_rc_params(cfg)):
+        fig, ax = plt.subplots(figsize=figsize)
+        image = ax.imshow(values, vmin=-1, vmax=1, cmap=cmap, interpolation="nearest")
+        # title = "Feature Cross-Correlation Matrix"
+        # if show_labels:
+        #     fig.suptitle(title, y=0.98)
+        # else:
+        #     ax.set_title(title)
+
+        if show_labels:
+            ticks = np.arange(n_features)
+            labels = cross_correlations.columns.tolist()
+            ax.set_xticks(ticks)
+            ax.set_yticks(ticks)
+            ax.set_xticklabels(labels, rotation=90, ha="center", va="top", fontsize=label_font_size)
+            ax.set_yticklabels(labels, fontsize=label_font_size)
+            ax.tick_params(
+                axis="x",
+                which="both",
+                top=True,
+                bottom=True,
+                labeltop=True,
+                labelbottom=True,
+                pad=2,
+            )
+            ax.tick_params(
+                axis="y",
+                which="both",
+                left=True,
+                right=True,
+                labelleft=True,
+                labelright=True,
+                pad=2,
+            )
+            for tick in ax.xaxis.get_major_ticks():
+                tick.label1.set_rotation(90)
+                tick.label1.set_ha("center")
+                tick.label1.set_va("top")
+                tick.label1.set_fontsize(label_font_size)
+                tick.label2.set_rotation(90)
+                tick.label2.set_ha("center")
+                tick.label2.set_va("bottom")
+                tick.label2.set_fontsize(label_font_size)
+            for tick in ax.yaxis.get_major_ticks():
+                tick.label1.set_ha("right")
+                tick.label2.set_ha("left")
+                tick.label1.set_fontsize(label_font_size)
+                tick.label2.set_fontsize(label_font_size)
+        else:
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.set_xlabel(f"{n_features} features")
+            ax.set_ylabel(f"{n_features} features")
+
+        if show_labels:
+            fig.subplots_adjust(left=0.18, right=0.70, bottom=0.22, top=0.74)
+            cbar_ax = fig.add_axes([0.88, 0.22, 0.025, 0.52])
+            cbar = fig.colorbar(image, cax=cbar_ax)
+        else:
+            cbar = fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
+            fig.tight_layout()
+        cbar.set_label("Pearson correlation")
+
+    out_path = out_dir / "feature_cross_correlation_matrix.png"
+    save_plot(fig, out_path, cfg)
+    plt.close(fig)
+    return out_path
+
+
 def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, Any]:
     np.random.seed(cfg["seed"])
 
     dataset = build_dataset(cfg)
     X_train, X_test, y_train, y_test = split_dataset(dataset, cfg)
 
-    run_name = f"{cfg['experiment_name']}@pca{cfg['features']['pca_n']}"
+    try:
+        run_name = f"{cfg['experiment_name']}@pca{cfg['features']['pca_n']}"
+    except KeyError:
+        run_name = f"{cfg['experiment_name']}"
     out_dir = ensure_dir(Path(cfg["paths"]["plots_root"]) / run_name)
 
     if cfg.get("save_dataset_snapshot", False):
-        dataset.to_csv(out_dir / "dataset_snapshot.csv", index=False)
+        relativize_path_columns(dataset).to_csv(out_dir / "dataset_snapshot.csv", index=False)
 
     results = []
     importance_paths: dict[str, str | None] = {}
     all_plcc: list[float] = []
     all_srcc: list[float] = []
+    profile_regressors = is_regressor_profiling_enabled(cfg)
+    profile_rows: list[dict[str, Any]] = []
+    predictions_by_model: dict[str, pd.DataFrame] = {}
+    prediction_names = dataset.loc[y_test.index, cfg["dataset"]["name_column"]].reset_index(drop=True)
 
     for model_name, model in init_models(cfg):
-        model.fit(X_train, y_train)
-        pred = model.predict(X_test)
+        if profile_regressors:
+            train_start = time.perf_counter()
+            model.fit(X_train, y_train)
+            train_runtime_sec = time.perf_counter() - train_start
+
+            predict_start = time.perf_counter()
+            pred = model.predict(X_test)
+            predict_runtime_sec = time.perf_counter() - predict_start
+            profile_rows.append(
+                build_regressor_profile_row(
+                    model_name=model_name,
+                    model=model,
+                    X_train=X_train,
+                    X_test=X_test,
+                    train_runtime_sec=train_runtime_sec,
+                    predict_runtime_sec=predict_runtime_sec,
+                )
+            )
+        else:
+            model.fit(X_train, y_train)
+            pred = model.predict(X_test)
+
         plcc, srcc = safe_corr(y_test, pred)
         all_plcc.append(plcc)
         all_srcc.append(srcc)
+        predictions_by_model[model_name] = pd.DataFrame(
+            {
+                "name": prediction_names,
+                "mos": y_test.reset_index(drop=True),
+                "prediction": np.asarray(pred, dtype=float).reshape(-1),
+            }
+        )
 
         results.append({"model": model_name, "plcc": plcc, "srcc": srcc, "source": "regressor"})
         if make_plots:
@@ -635,13 +996,51 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
 
     results_df = pd.DataFrame(results).sort_values("srcc", ascending=False).reset_index(drop=True)
     results_df.to_csv(out_dir / "correlations.csv", index=False)
+    for model_name, predictions in predictions_by_model.items():
+        predictions.to_csv(out_dir / f"predictions_{model_name}.csv", index=False)
+
+    regressor_profile_path = None
+    regressor_total_profile_path = None
+    feature_profile_summary_path = None
+    if profile_rows:
+        regressor_profile_path = resolve_regressor_profile_path(cfg, out_dir, run_name)
+        ensure_dir(regressor_profile_path.parent)
+        regressor_profile = pd.DataFrame(profile_rows)
+        regressor_profile.to_csv(regressor_profile_path, index=False)
+
+        feature_profile_summary = load_feature_profile_summary(cfg, X_train.columns)
+        if not feature_profile_summary.empty:
+            feature_profile_summary_path = out_dir / "regressor_feature_profile_summary.csv"
+            feature_profile_summary.to_csv(feature_profile_summary_path, index=False)
+
+            total_profile = build_regressor_total_profile(regressor_profile, feature_profile_summary)
+            if not total_profile.empty:
+                regressor_total_profile_path = resolve_regressor_total_profile_path(cfg, out_dir, run_name)
+                ensure_dir(regressor_total_profile_path.parent)
+                total_profile.to_csv(regressor_total_profile_path, index=False)
+
+    feature_correlations = compute_feature_correlations(X_test, y_test)
+    feature_correlations.to_csv(out_dir / "feature_correlations.csv", index=False)
+    X_all = pd.concat([X_train, X_test], axis=0).sort_index()
+    feature_cross_correlations = compute_feature_cross_correlations(X_all, cfg)
+    feature_cross_correlations.to_csv(out_dir / "feature_cross_correlations.csv")
 
     combined_importance_path = None
     correlations_path = None
     correlations_without_metrics_path = None
+    feature_correlations_path = None
+    feature_cross_correlations_path = None
+    prediction_scatter_path = None
     if make_plots:
         combined_importance_path = plot_all_importances(importance_paths, out_dir, cfg)
         correlations_path = plot_correlations(results_df, out_dir, cfg)
+        feature_correlations_path = plot_feature_correlations(feature_correlations, results_df, out_dir, cfg)
+        feature_cross_correlations_path = plot_feature_cross_correlation_matrix(
+            feature_cross_correlations,
+            out_dir,
+            cfg,
+        )
+        prediction_scatter_path = plot_prediction_scatter(predictions_by_model, out_dir, cfg)
         if "source" in results_df.columns:
             without_metrics = results_df[results_df["source"] != "metric"].copy()
         else:
@@ -668,6 +1067,16 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
         "correlations_without_metrics_path": (
             str(correlations_without_metrics_path) if correlations_without_metrics_path else None
         ),
+        "feature_correlations_path": str(feature_correlations_path) if feature_correlations_path else None,
+        "feature_cross_correlations_path": (
+            str(feature_cross_correlations_path) if feature_cross_correlations_path else None
+        ),
+        "prediction_scatter_path": str(prediction_scatter_path) if prediction_scatter_path else None,
+        "regressor_profile_path": str(regressor_profile_path) if regressor_profile_path else None,
+        "regressor_total_profile_path": (
+            str(regressor_total_profile_path) if regressor_total_profile_path else None
+        ),
+        "feature_profile_summary_path": str(feature_profile_summary_path) if feature_profile_summary_path else None,
     }
 
 
@@ -683,6 +1092,36 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--plots-root", default=None, help="Override config paths.plots_root.")
     parser.add_argument("--no-plots", action="store_true", help="Skip plot generation.")
     parser.add_argument("--save-svg", action="store_true", help="Also save generated plots in SVG format.")
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Measure regressor train/predict runtime and save regressor_profile.csv.",
+    )
+    parser.add_argument(
+        "--profile-output",
+        default=None,
+        help=(
+            "Output CSV path for regressor runtime/FLOPs profile. "
+            "Implies --profile. Default: <run_output>/regressor_profile.csv."
+        ),
+    )
+    parser.add_argument(
+        "--profile-total-output",
+        default=None,
+        help=(
+            "Output CSV path for feature+regressor runtime/FLOPs totals when feature profile data exists. "
+            "Default: <run_output>/regressor_total_profile.csv."
+        ),
+    )
+    parser.add_argument(
+        "--feature-profile-files",
+        nargs="+",
+        default=None,
+        help=(
+            "Existing feature profile CSV files to aggregate into regressor totals. "
+            "Can also be configured as profiling.feature_profile_files."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -697,6 +1136,19 @@ def main(argv: list[str] | None = None) -> None:
         overrides.setdefault("paths", {})["plots_root"] = args.plots_root
     if args.save_svg:
         overrides.setdefault("plot", {})["save_svg"] = True
+    if (
+        args.profile
+        or args.profile_output is not None
+        or args.profile_total_output is not None
+        or args.feature_profile_files is not None
+    ):
+        overrides.setdefault("profiling", {})["regressors"] = True
+    if args.profile_output is not None:
+        overrides.setdefault("profiling", {})["regressor_output"] = args.profile_output
+    if args.profile_total_output is not None:
+        overrides.setdefault("profiling", {})["regressor_total_output"] = args.profile_total_output
+    if args.feature_profile_files is not None:
+        overrides.setdefault("profiling", {})["feature_profile_files"] = args.feature_profile_files
     if overrides:
         cfg = deep_update(cfg, overrides)
 

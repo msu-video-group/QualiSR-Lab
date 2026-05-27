@@ -1,6 +1,6 @@
 # QualiSR-Lab: Reduced-Reference IQA for SR
 
-[Oleg Ryabinin](https://orcid.org/0009-0008-3153-4183)<sup>1,2</sup> | [Evgeney Bogatyrev](https://orcid.org/0000-0002-6173-3561)<sup>1,2,3</sup> | [Dmitriy Vatolin](https://orcid.org/0000-0002-8893-9340)<sup>1,2,3</sup>
+[Oleg Ryabinin](https://orcid.org/0009-0008-3153-4183)<sup>1,2</sup> | [Evgeney Bogatyrev](https://orcid.org/0000-0002-6173-3561)<sup>1,2,3</sup> | [Abud Khaled](https://orcid.org/0009-0009-7131-5839)<sup>1,2,3</sup> | [Dmitriy Vatolin](https://orcid.org/0000-0002-8893-9340)<sup>1,2,3</sup>
 
 <sup>1</sup>Lomonosov Moscow State University, 119991, Moscow, Russia
 
@@ -89,6 +89,29 @@ See [dataset/readme.md](dataset/readme.md) for dataset download notes.
 
 ---
 
+## ♻️ Full Reproducibility Run
+
+To download the dataset and run feature extraction, PCA, artifact statistics, and regressor analysis end to end:
+
+```bash
+python -m pip install -e ".[features,regressors]"
+bash scripts/reproduce_pipeline.sh
+```
+
+Useful overrides:
+
+```bash
+DEVICE=cuda SAVE_SVG=1 bash scripts/reproduce_pipeline.sh
+PROFILE=1 PROFILE_FLOPS=1 bash scripts/reproduce_pipeline.sh
+DATASET_SOURCE=gdrive bash scripts/reproduce_pipeline.sh
+DATASET_SOURCE=archive DATASET_ARCHIVE=/path/to/grounding_dataset.zip bash scripts/reproduce_pipeline.sh
+DATASET_SOURCE=skip DATASET_DIR=dataset bash scripts/reproduce_pipeline.sh
+```
+
+The script writes feature-group CSVs such as `features/fr.csv`, `features/nr.csv`, and `features/vgg.csv`, PCA outputs to `features/pca/`, prepared scores to `scores/`, and plots/results to `plots/`.
+
+---
+
 ## 🚀 Workflow
 
 ### Step 0 (optional): Prepare reference images
@@ -131,6 +154,8 @@ qualisr-extract-features \
   --device cuda
 ```
 
+Add `--profile` to save `<output_stem>_profile.csv` with mean runtime per feature. Add `--profile-flops` to also estimate PyTorch model FLOPs for features such as VGG, ResNet, SigLIP, and PyIQA metrics; this implies profiling and reruns model calls, so it is slower.
+
 ---
 
 ### Step 2: Apply PCA to high-dimensional features
@@ -157,10 +182,12 @@ Input directories can be passed as `PREFIX=DIR` to ensure stable sample naming.
 ```bash
 qualisr-compute-stats \
   --heatmap-dirs PASD=dataset/heatmaps/PASD SUPIR=dataset/heatmaps/SUPIR RealESRGAN=dataset/heatmaps/RealESRGAN \
-  --output features/stats@grounding.csv \
+  --output features/stats.csv \
   --percentiles 5 95 \
   --area-thresholds 0 0.5 0.75
 ```
+
+Add `--profile` to save `<output_stem>_profile.csv` with mean runtime and simple operation-count estimates for artifact statistics.
 
 ---
 
@@ -172,10 +199,14 @@ Train regressors and produce summary on feature importances and correlations. Th
 qualisr-run-regressors --config configs/default.json
 ```
 
+Add `--profile` to save `regressor_profile.csv` with train/predict runtime and estimated prediction FLOPs for tree regressors. If feature profile CSVs are available, pass them with `--feature-profile-files` or configure `profiling.feature_profile_files`; the pipeline also saves `regressor_total_profile.csv` with summed feature + regressor runtime/FLOPs.
+
 You can also use `regressors.ipynb` notebook for experiments. It trains regressors, evaluates them, and visualizes:
 
 - feature importances,
 - PLCC/SRCC correlations,
+- feature cross-correlation matrix,
+- MOS/prediction scatter plot,
 - comparisons across feature groups and model settings.
 
 The first notebook cell describes the workflow for running experiments individually or in batches.
