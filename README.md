@@ -1,4 +1,7 @@
-![Logo](logo.png)
+<div align=center class="logo">
+      <img src="logo.png" style="width:640px">
+   </a>
+</div>
 
 # QualiSR-Lab: Reduced-Reference IQA for SR
 
