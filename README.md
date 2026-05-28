@@ -1,5 +1,5 @@
 <div align=center class="logo">
-      <img src="logo.png" style="width:640px">
+      <img src="logo_vector.svg" style="width:640px">
    </a>
 </div>
 
@@ -12,6 +12,8 @@
 <sup>2</sup>AI Center, Lomonosov Moscow State University
 
 <sup>3</sup>MSU Institute for Artificial Intelligence, Lomonosov Moscow State University
+
+🚩 Submitted to [ACM MM Open Source Software 2026](https://2026.acmmm.org/site/call-open-source.html).
 
 ## 🔎 Overview
 
@@ -30,8 +32,7 @@ The proposed pipeline is:
 
 The sections below describe the required data format and the workflow.
 
-![Pipeline overview](pipeline_legend.png)
-
+![Pipeline overview](pipeline.png)
 ---
 
 ## 🐌 Quickstart With Precomputed Features
@@ -103,7 +104,7 @@ python -m pip install -e ".[features,regressors]"
 bash scripts/reproduce_pipeline.sh
 ```
 
-Useful overrides:
+<!-- Useful overrides:
 
 ```bash
 DEVICE=cuda SAVE_SVG=1 bash scripts/reproduce_pipeline.sh
@@ -111,7 +112,7 @@ PROFILE=1 PROFILE_FLOPS=1 bash scripts/reproduce_pipeline.sh
 DATASET_SOURCE=gdrive bash scripts/reproduce_pipeline.sh
 DATASET_SOURCE=archive DATASET_ARCHIVE=/path/to/grounding_dataset.zip bash scripts/reproduce_pipeline.sh
 DATASET_SOURCE=skip DATASET_DIR=dataset bash scripts/reproduce_pipeline.sh
-```
+``` -->
 
 The script writes feature-group CSVs such as `features/fr.csv`, `features/nr.csv`, and `features/vgg.csv`, PCA outputs to `features/pca/`, prepared scores to `scores/`, and plots/results to `plots/`.
 
