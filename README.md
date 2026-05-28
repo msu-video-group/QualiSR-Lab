@@ -1,3 +1,5 @@
+![Logo](logo.png)
+
 # QualiSR-Lab: Reduced-Reference IQA for SR
 
 [Oleg Ryabinin](https://orcid.org/0009-0008-3153-4183)<sup>1,2</sup> | [Evgeney Bogatyrev](https://orcid.org/0000-0002-6173-3561)<sup>1,2,3</sup> | [Abud Khaled](https://orcid.org/0009-0009-7131-5839)<sup>1,2,3</sup> | [Dmitriy Vatolin](https://orcid.org/0000-0002-8893-9340)<sup>1,2,3</sup>
