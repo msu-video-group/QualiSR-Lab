@@ -35,6 +35,48 @@ from qualisr_lab.profiling import (
 )
 
 
+PRETTY_FEATURE_NAMES = {
+    'catboost': 'Catboost',
+    'randomforest': 'Random Forest',
+    'xgb': 'XGBoost',
+    'mean_features': 'Mean Features',
+    'median_features': 'Median Features',
+
+    'musiq': 'MUSIQ',
+    'unique': 'UNIQUE',
+    'arniqa': 'ARNIQA',
+    'qalign': 'Q-Align',
+    'paq2piq': 'PaQ-2-PiQ',
+
+    'stlpips-vgg': 'STLPIPS-VGG',
+    'lpips-vgg': 'LPIPS-VGG',
+    'psnr': 'PSNR',
+    'ssim': 'SSIM',
+    'pieapp': 'PieAPP',
+    'ahiq': 'AHIQ',
+
+    'rlfn': 'RLFN',
+    'span': 'SPAN',
+    'bicubic': 'Bicubic',
+    'gt': 'GT'
+}
+
+def get_pretty_feature(name):
+    if name in PRETTY_FEATURE_NAMES:
+        return PRETTY_FEATURE_NAMES[name]
+    
+    for ref in ['rlfn', 'span', 'bicubic', 'gt']:
+        if ref in name:
+            return f'{PRETTY_FEATURE_NAMES[name.split('_')[0]]} + {PRETTY_FEATURE_NAMES[ref]}'
+
+    if 'resnet' in name:
+        return f'ResNet PC{int(name.split('_')[-1])}'
+    if 'vgg' in name:
+        return f'VGG PC{int(name.split('_')[-1])}'
+
+    return name
+
+
 def deep_update(base: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
     result = deepcopy(base)
     for key, value in updates.items():
@@ -719,6 +761,23 @@ def compute_feature_correlations(X_test: pd.DataFrame, y_test: pd.Series) -> pd.
         }
     )
 
+    median_values = X_test.apply(pd.to_numeric, errors="coerce").median(axis=1).reset_index(drop=True)
+    valid = target.notna() & median_values.notna()
+    if valid.any():
+        plcc, srcc = safe_corr(target[valid], median_values[valid])
+    else:
+        plcc, srcc = np.nan, np.nan
+    rows.append(
+        {
+            "feature": "median_features",
+            "family": "Median",
+            "plcc": plcc,
+            "srcc": srcc,
+            "abs_plcc": abs(plcc) if not np.isnan(plcc) else np.nan,
+            "abs_srcc": abs(srcc) if not np.isnan(srcc) else np.nan,
+        }
+    )
+
     return pd.DataFrame(rows).sort_values("abs_srcc", ascending=False).reset_index(drop=True)
 
 
@@ -733,7 +792,8 @@ def plot_feature_correlations(
 
     feature_rows = feature_correlations.rename(columns={"feature": "name", "family": "group"}).copy()
     feature_rows["kind"] = "feature"
-    feature_rows.loc[feature_rows["group"] == "Mean", "kind"] = "mean_features"
+    feature_rows.loc[feature_rows["group"] == "Mean", "kind"] = "regressor"
+    feature_rows.loc[feature_rows["group"] == "Median", "kind"] = "regressor"
 
     if "source" in results_df.columns:
         regressor_results = results_df[results_df["source"] == "regressor"].copy()
@@ -755,44 +815,47 @@ def plot_feature_correlations(
         plot_df = feature_rows[["name", "group", "kind", "plcc", "srcc"]]
 
     plot_df["abs_srcc"] = plot_df["srcc"].abs()
-    plot_df = plot_df.sort_values(["kind", "abs_srcc"], ascending=[True, True]).reset_index(drop=True)
+    # plot_df = plot_df.sort_values(["kind", "abs_srcc"], ascending=[True, True]).reset_index(drop=True)
+    plot_df = plot_df.sort_values(["kind", "srcc"], ascending=[True, True]).reset_index(drop=True)
+
+    # plot_df = plot_df[plot_df["srcc"] > 0]
+    plot_df["name"] = plot_df["name"].map(get_pretty_feature).fillna(plot_df["name"])
 
     y = np.arange(len(plot_df))
     bar_height = 0.36
     is_regressor = plot_df["kind"] == "regressor"
     is_mean_features = plot_df["kind"] == "mean_features"
+    is_median_features = plot_df["kind"] == "median_features"
     plcc_colors = np.select(
-        [is_regressor, is_mean_features],
-        ["#ffb347", "#8ecae6"],
-        default="#b8c0cc",
-    )
-    srcc_colors = np.select(
-        [is_regressor, is_mean_features],
-        ["#e85d04", "#219ebc"],
+        [is_regressor, is_mean_features, is_median_features],
+        ["#845ec2", "#845ec2", "#845ec2"],
         default="#4d5a68",
     )
+    srcc_colors = np.select(
+        [is_regressor, is_mean_features, is_median_features],
+        ["#00c9a7", "#00c9a7", "#00c9a7"],
+        default="#b8c0cc",
+    )
 
-    default_height = max(6, 0.34 * len(plot_df))
-    figsize = tuple(cfg.get("plot", {}).get("feature_correlation_figsize", [12, default_height]))
+    default_height = max(6, 0.5 * len(plot_df))
+    figsize = tuple(cfg.get("plot", {}).get("feature_correlation_figsize", [9, default_height]))
 
     with plt.rc_context(plot_rc_params(cfg)):
         fig, ax = plt.subplots(figsize=figsize)
-        ax.barh(y - bar_height / 2, plot_df["plcc"], height=bar_height, color=plcc_colors)
-        ax.barh(y + bar_height / 2, plot_df["srcc"], height=bar_height, color=srcc_colors)
+        ax.barh(y + bar_height / 2, plot_df["plcc"], height=bar_height, color=plcc_colors)
+        ax.barh(y - bar_height / 2, plot_df["srcc"], height=bar_height, color=srcc_colors)
         ax.set_yticks(y)
         ax.set_yticklabels(plot_df["name"].tolist())
-        ax.set_xlim(-1, 1)
+        ax.set_xlim(0, 1)
         ax.axvline(0, color="#222222", linewidth=0.8)
         ax.set_xlabel("Correlation")
-        ax.set_title("Feature, Mean Feature, and Regressor Correlations")
+        ax.set_title("Feature and Predictor Correlations")
 
         handles = [
-            mpatches.Patch(color="#b8c0cc", label="Feature PLCC"),
-            mpatches.Patch(color="#4d5a68", label="Feature SRCC"),
-            mpatches.Patch(color="#8ecae6", label="Mean Features PLCC"),
-            mpatches.Patch(color="#219ebc", label="Mean Features SRCC"),
-            mpatches.Patch(color="#ffb347", label="Regressor PLCC"),
-            mpatches.Patch(color="#e85d04", label="Regressor SRCC"),
+            mpatches.Patch(color="#4d5a68", label="Feature PLCC"),
+            mpatches.Patch(color="#b8c0cc", label="Feature SRCC"),
+            mpatches.Patch(color="#845ec2", label="Predictor PLCC"),
+            mpatches.Patch(color="#00c9a7", label="Predictor SRCC"),
         ]
         ax.legend(handles=handles, loc="lower right")
         fig.tight_layout()
