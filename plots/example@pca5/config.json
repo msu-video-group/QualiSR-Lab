@@ -1,6 +1,6 @@
 {
   "seed": 42,
-  "experiment_name": "baseline",
+  "experiment_name": "baseline_stats",
   "test_size": 0.2,
   "scale_features": true,
   "permutation_repeats": 10,
@@ -120,7 +120,8 @@
       12,
       5
     ],
-    "dpi": 600,
-    "font_size": 16
+    "dpi": 300,
+    "font_size": 16,
+    "save_svg": false
   }
 }
