@@ -67,12 +67,13 @@ def get_pretty_feature(name):
     
     for ref in ['rlfn', 'span', 'bicubic', 'gt']:
         if ref in name:
-            return f'{PRETTY_FEATURE_NAMES[name.split('_')[0]]} + {PRETTY_FEATURE_NAMES[ref]}'
+            prefix = PRETTY_FEATURE_NAMES.get(name.split("_")[0], name.split("_")[0])
+            return f'{prefix} + {PRETTY_FEATURE_NAMES[ref]}'
 
     if 'resnet' in name:
-        return f'ResNet PC{int(name.split('_')[-1])}'
+        return f'ResNet PC{int(name.split("_")[-1])}'
     if 'vgg' in name:
-        return f'VGG PC{int(name.split('_')[-1])}'
+        return f'VGG PC{int(name.split("_")[-1])}'
 
     return name
 
