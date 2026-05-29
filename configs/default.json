@@ -109,6 +109,7 @@
             "importance": true,
             "all_importances": true,
             "shap": true,
+            "all_shap_importances": true,
             "correlations": true,
             "correlations_without_metrics": true,
             "feature_correlations": true,
@@ -126,6 +127,8 @@
         "feature_correlation_matrix_label_font_size": 8,
         "dpi": 300,
         "font_size": 16,
+        "bbox_inches": "tight",
+        "pad_inches": 0.1,
         "save_svg": false
     }
 }

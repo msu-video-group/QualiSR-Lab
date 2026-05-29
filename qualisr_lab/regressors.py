@@ -606,9 +606,16 @@ def plot_enabled(cfg: dict[str, Any], name: str) -> bool:
 
 def save_plot(fig: plt.Figure, out_path: Path, cfg: dict[str, Any]) -> None:
     savefig_kwargs = {}
+    plot_cfg = cfg.get("plot", {})
     dpi = cfg.get("plot", {}).get("dpi")
     if dpi is not None:
         savefig_kwargs["dpi"] = dpi
+    bbox_inches = plot_cfg.get("bbox_inches", "tight")
+    if bbox_inches:
+        savefig_kwargs["bbox_inches"] = bbox_inches
+    pad_inches = plot_cfg.get("pad_inches", 0.1)
+    if pad_inches is not None:
+        savefig_kwargs["pad_inches"] = pad_inches
     fig.savefig(out_path, **savefig_kwargs)
     if cfg.get("plot", {}).get("save_svg", False):
         fig.savefig(out_path.with_suffix(".svg"), **savefig_kwargs)
@@ -680,7 +687,7 @@ def plot_importance(
     with plt.rc_context(plot_rc_params(cfg)):
         fig, ax = plt.subplots(figsize=tuple(cfg["plot"]["importance_figsize"]))
         display_importances.plot.barh(yerr=perm_std.to_numpy(), ax=ax, color=colors)
-        ax.set_title(f"Feature Importances: {model_display_name(model_name, cfg)}")
+        ax.set_title(f"{model_display_name(model_name, cfg)}\nFeature Importances", pad=10)
         ax.set_xlabel("Importance")
         fig.tight_layout()
 
@@ -768,20 +775,11 @@ def plot_shap_importance(
         ax.set_yticks(range(len(plot_values)))
         ax.set_yticklabels(pretty_labels)
         ax.set_xlabel("Mean |SHAP value|")
-        ax.set_title(f"SHAP Feature Importance: {model_display_name(model_name, cfg)}")
+        ax.set_title(f"{model_display_name(model_name, cfg)}\nSHAP Feature Importance", pad=10)
         if max_value > 0:
             ax.set_xlim(0, max_value * 1.15)
         ax.spines[["top", "right"]].set_visible(False)
 
-        present = {feature_family(name) for name in plot_values.index}
-        labels = importance_legend_labels(cfg)
-        handles = [
-            mpatches.Patch(color=palette[key], label=labels[key])
-            for key in labels
-            if key in present
-        ]
-        if handles:
-            ax.legend(handles=handles, loc="lower right")
         fig.tight_layout()
 
     out_path = out_dir / f"shap_importance_{model_name}.png"
@@ -831,6 +829,47 @@ def plot_all_importances(
     return out_path
 
 
+def plot_all_shap_importances(
+    shap_paths: dict[str, str | None],
+    out_dir: Path,
+    cfg: dict[str, Any],
+) -> Path | None:
+    valid = []
+    for model_name, path in shap_paths.items():
+        if path is None:
+            continue
+        existing_path = Path(path)
+        if existing_path.exists():
+            valid.append((model_name, existing_path))
+
+    if not valid:
+        return None
+
+    images = [plt.imread(path) for _, path in valid]
+    single_w, single_h = tuple(cfg.get("plot", {}).get("shap_figsize", cfg["plot"]["importance_figsize"]))
+    with plt.rc_context(plot_rc_params(cfg)):
+        fig, axes = plt.subplots(1, len(images), figsize=(single_w * len(images), single_h))
+
+        if len(images) == 1:
+            axes = [axes]
+
+        for ax, (_, _), image in zip(axes, valid, images, strict=False):
+            ax.imshow(image)
+            ax.axis("off")
+
+        palette = importance_palette()
+        labels = importance_legend_labels(cfg)
+        handles = [mpatches.Patch(color=palette[key], label=labels[key]) for key in labels]
+
+        fig.legend(handles=handles, loc="center right", bbox_to_anchor=(0.995, 0.5))
+        fig.tight_layout(rect=(0, 0, 0.9, 1))
+
+    out_path = out_dir / "all_models_shap_importances.png"
+    save_plot(fig, out_path, cfg)
+    plt.close(fig)
+    return out_path
+
+
 def plot_correlations(
     results_df: pd.DataFrame,
     out_dir: Path,
@@ -849,7 +888,7 @@ def plot_correlations(
         ax.bar(x + bar_width / 2, df["srcc"], width=bar_width, label="SRCC", color="#00c9a7")
         ax.set_xticks(x)
         ax.set_xticklabels(get_pretty_labels(df["model"], cfg), rotation=30, ha="right")
-        ax.set_ylim(-1, 1)
+        ax.set_ylim(0, 1)
         ax.set_ylabel("Correlation")
         ax.set_title(title)
         ax.legend(loc="upper right")
@@ -1024,7 +1063,7 @@ def plot_feature_correlations(
         ax.barh(y - bar_height / 2, plot_df["srcc"], height=bar_height, color=srcc_colors)
         ax.set_yticks(y)
         ax.set_yticklabels(plot_df["name"].tolist())
-        ax.set_xlim(0, 1)
+        ax.set_xlim(-1, 1)
         ax.axvline(0, color="#222222", linewidth=0.8)
         ax.set_xlabel("Correlation")
         ax.set_title("Feature and Predictor Correlations")
@@ -1271,6 +1310,7 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
     feature_cross_correlations.to_csv(out_dir / "feature_cross_correlations.csv")
 
     combined_importance_path = None
+    combined_shap_importance_path = None
     correlations_path = None
     correlations_without_metrics_path = None
     feature_correlations_path = None
@@ -1279,6 +1319,8 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
     if make_plots:
         if plot_enabled(cfg, "all_importances"):
             combined_importance_path = plot_all_importances(importance_paths, out_dir, cfg)
+        if plot_enabled(cfg, "all_shap_importances"):
+            combined_shap_importance_path = plot_all_shap_importances(shap_paths, out_dir, cfg)
         if plot_enabled(cfg, "correlations"):
             correlations_path = plot_correlations(results_df, out_dir, cfg)
         if plot_enabled(cfg, "feature_correlations"):
@@ -1314,6 +1356,9 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
         "importance_paths": importance_paths,
         "shap_paths": shap_paths,
         "all_importances_path": str(combined_importance_path) if combined_importance_path else None,
+        "all_shap_importances_path": (
+            str(combined_shap_importance_path) if combined_shap_importance_path else None
+        ),
         "correlations_path": str(correlations_path) if correlations_path else None,
         "correlations_without_metrics_path": (
             str(correlations_without_metrics_path) if correlations_without_metrics_path else None
