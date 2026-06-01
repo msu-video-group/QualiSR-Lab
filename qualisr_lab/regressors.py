@@ -79,6 +79,9 @@ PRETTY_FEATURE_NAMES = {
     "area075": "Area 0.75",
 }
 
+DEFAULT_NR_METRICS = ("musiq", "arniqa", "qalign", "unique", "paq2piq")
+DEFAULT_FR_METRICS = ("psnr", "ssim", "lpips-vgg", "stlpips-vgg", "pieapp", "ahiq")
+
 PCA_FEATURE_RE = re.compile(r"^(?P<family>vgg|resnet)(?:_pca)?[_-]?(?P<component>\d+)$", re.IGNORECASE)
 
 
@@ -533,11 +536,95 @@ def split_dataset(
     return X_train, X_test, y_train, y_test
 
 
-def feature_family(feature_name: str) -> str:
+def _config_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    if isinstance(value, dict):
+        return [str(key) for key in value]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item).strip()]
+    return [str(value)]
+
+
+def infer_feature_categories_from_pipeline_config(cfg: dict[str, Any]) -> dict[str, list[str]]:
+    features_cfg = cfg.get("features", {})
+    if not isinstance(features_cfg, dict):
+        return {}
+
+    categories: dict[str, list[str]] = {
+        "nr_metrics": [],
+        "fr_metrics": [],
+        "timm_prefixes": [],
+    }
+
+    sources: list[dict[str, Any]] = []
+    common = features_cfg.get("common", {})
+    if isinstance(common, dict):
+        sources.append(common)
+
+    groups = features_cfg.get("groups", {})
+    if isinstance(groups, dict):
+        sources.extend(group for group in groups.values() if isinstance(group, dict))
+    elif isinstance(groups, list):
+        sources.extend(group for group in groups if isinstance(group, dict))
+
+    for source in sources:
+        categories["nr_metrics"].extend(_config_list(source.get("nr_metrics")))
+        categories["fr_metrics"].extend(_config_list(source.get("fr_metrics")))
+
+        timm_encoders = source.get("timm_encoders")
+        if isinstance(timm_encoders, dict):
+            categories["timm_prefixes"].extend(str(name) for name in timm_encoders)
+        else:
+            for spec in _config_list(timm_encoders):
+                categories["timm_prefixes"].append(spec.split("=", 1)[0].strip())
+
+    return {
+        key: sorted(set(value), key=str.lower)
+        for key, value in categories.items()
+        if value
+    }
+
+
+def configured_feature_categories(cfg: dict[str, Any] | None = None) -> dict[str, list[str]]:
+    categories = {
+        "nr_metrics": list(DEFAULT_NR_METRICS),
+        "fr_metrics": list(DEFAULT_FR_METRICS),
+        "timm_prefixes": [],
+    }
+    if not cfg:
+        return categories
+
+    for source in [cfg.get("feature_categories", {}), cfg.get("features", {})]:
+        if not isinstance(source, dict):
+            continue
+        for key in categories:
+            if key in source:
+                categories[key].extend(_config_list(source[key]))
+
+    categories["nr_metrics"] = sorted(set(categories["nr_metrics"]), key=str.lower)
+    categories["fr_metrics"] = sorted(set(categories["fr_metrics"]), key=str.lower)
+    categories["timm_prefixes"] = sorted(set(categories["timm_prefixes"]), key=str.lower)
+    return categories
+
+
+def feature_family(feature_name: str, cfg: dict[str, Any] | None = None) -> str:
     feature = feature_name.lower()
-    if any(x in feature for x in ["musiq", "arniqa", "qalign", "unique", "paq2piq"]):
+    categories = configured_feature_categories(cfg)
+    nr_metrics = [metric.lower() for metric in categories["nr_metrics"]]
+    fr_metrics = [metric.lower() for metric in categories["fr_metrics"]]
+    timm_prefixes = [prefix.lower().rstrip("_") for prefix in categories["timm_prefixes"]]
+
+    if feature in nr_metrics:
         return "NR"
-    if any(feature.endswith("_" + ref) for ref in ["gt", "bicubic", "span", "rlfn"]):
+    if any(feature == prefix or feature.startswith(prefix + "_") for prefix in timm_prefixes):
+        return "Timm"
+    if any(
+        feature == metric or feature.startswith(metric + "_")
+        for metric in fr_metrics
+    ):
         return "FR"
     if feature.startswith("vgg_"):
         return "VGG"
@@ -554,6 +641,7 @@ def importance_palette() -> dict[str, str]:
     return {
         "NR": "#ff6150",
         "FR": "#f8aa4b",
+        "Timm": "#8a63d2",
         "VGG": "#54d2d2",
         "ResNet": "#0e4a95",
         "SigLIP": "#5255ea",
@@ -566,6 +654,7 @@ def importance_legend_labels(cfg: dict[str, Any] | None = None) -> dict[str, str
     labels = {
         "NR": "NR metrics",
         "FR": "FR metrics",
+        "Timm": "timm embeddings",
         "VGG": "VGG features",
         "ResNet": "ResNet features",
         "SigLIP": "SigLIP features",
@@ -680,7 +769,7 @@ def plot_importance(
     perm_std = pd.Series(perm.importances_std, index=X_test.columns).reindex(importances.index)
 
     palette = importance_palette()
-    colors = [palette[feature_family(name)] for name in importances.index]
+    colors = [palette[feature_family(name, cfg)] for name in importances.index]
     display_importances = importances.copy()
     display_importances.index = get_pretty_labels(importances.index, cfg)
 
@@ -793,7 +882,7 @@ def plot_shap_importance(
         {
             "feature": mean_abs.index,
             "pretty_feature": get_pretty_labels(mean_abs.index, cfg),
-            "family": [feature_family(name) for name in mean_abs.index],
+            "family": [feature_family(name, cfg) for name in mean_abs.index],
             "mean_abs_shap": mean_abs.values,
         }
     )
@@ -801,7 +890,7 @@ def plot_shap_importance(
 
     plot_values = mean_abs.sort_values(ascending=True)
     palette = importance_palette()
-    colors = [palette[feature_family(name)] for name in plot_values.index]
+    colors = [palette[feature_family(name, cfg)] for name in plot_values.index]
     pretty_labels = get_pretty_labels(plot_values.index, cfg)
     max_value = float(plot_values.max()) if len(plot_values) else 0.0
     default_height = max(5.0, 0.45 * len(plot_values))
@@ -976,7 +1065,11 @@ def plot_prediction_scatter(
     return out_path
 
 
-def compute_feature_correlations(X_test: pd.DataFrame, y_test: pd.Series) -> pd.DataFrame:
+def compute_feature_correlations(
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+    cfg: dict[str, Any] | None = None,
+) -> pd.DataFrame:
     target = pd.to_numeric(y_test.reset_index(drop=True), errors="coerce")
     rows = []
 
@@ -991,7 +1084,7 @@ def compute_feature_correlations(X_test: pd.DataFrame, y_test: pd.Series) -> pd.
         rows.append(
             {
                 "feature": feature_name,
-                "family": feature_family(feature_name),
+                "family": feature_family(feature_name, cfg),
                 "plcc": plcc,
                 "srcc": srcc,
                 "abs_plcc": abs(plcc) if not np.isnan(plcc) else np.nan,
@@ -1341,7 +1434,7 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
                 ensure_dir(regressor_total_profile_path.parent)
                 total_profile.to_csv(regressor_total_profile_path, index=False)
 
-    feature_correlations = compute_feature_correlations(X_test, y_test)
+    feature_correlations = compute_feature_correlations(X_test, y_test, cfg)
     feature_correlations.to_csv(out_dir / "feature_correlations.csv", index=False)
     X_all = pd.concat([X_train, X_test], axis=0).sort_index()
     feature_cross_correlations = compute_feature_cross_correlations(X_all, cfg)
@@ -1456,6 +1549,10 @@ def extract_regressor_config(cfg: dict[str, Any], base_dir: Path | None = None) 
         result = deep_update(result, section["config"])
     if isinstance(section.get("overrides"), dict):
         result = deep_update(result, section["overrides"])
+
+    inferred_categories = infer_feature_categories_from_pipeline_config(cfg)
+    if inferred_categories:
+        result = deep_update({"feature_categories": inferred_categories}, result)
 
     return result
 

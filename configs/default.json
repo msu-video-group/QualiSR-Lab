@@ -90,6 +90,12 @@
         }
     },
 
+    "feature_categories": {
+        "nr_metrics": [],
+        "fr_metrics": [],
+        "timm_prefixes": []
+    },
+
     "models": {
         "randomforest": {"enabled": true, "params": {}},
         "xgb": {"enabled": true, "params": {}},

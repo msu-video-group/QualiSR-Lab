@@ -262,14 +262,69 @@ def run_statistics(cfg: Mapping[str, Any]) -> None:
     run_module_main("scripts.compute_statistics", argv)
 
 
+def collect_feature_categories(features_cfg: Mapping[str, Any] | None) -> dict[str, list[str]]:
+    if not isinstance(features_cfg, Mapping):
+        return {}
+
+    categories: dict[str, list[str]] = {
+        "nr_metrics": [],
+        "fr_metrics": [],
+        "timm_prefixes": [],
+    }
+
+    sources: list[Mapping[str, Any]] = []
+    common = features_cfg.get("common", {})
+    if isinstance(common, Mapping):
+        sources.append(common)
+
+    groups = features_cfg.get("groups", {})
+    if isinstance(groups, Mapping):
+        sources.extend(group for group in groups.values() if isinstance(group, Mapping))
+    else:
+        sources.extend(group for group in as_list(groups) if isinstance(group, Mapping))
+
+    for source in sources:
+        categories["nr_metrics"].extend(_config_list_for_categories(source.get("nr_metrics")))
+        categories["fr_metrics"].extend(_config_list_for_categories(source.get("fr_metrics")))
+        timm_encoders = source.get("timm_encoders")
+        if isinstance(timm_encoders, Mapping):
+            categories["timm_prefixes"].extend(str(name) for name in timm_encoders)
+        else:
+            for spec in _config_list_for_categories(timm_encoders):
+                categories["timm_prefixes"].append(spec.split("=", 1)[0].strip())
+
+    return {
+        key: sorted(set(value), key=str.lower)
+        for key, value in categories.items()
+        if value
+    }
+
+
+def _config_list_for_categories(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    if isinstance(value, Mapping):
+        return [str(key) for key in value]
+    return [str(item) for item in as_list(value) if str(item).strip()]
+
+
 def run_regressors_section(
     cfg: Mapping[str, Any],
     base_dir: Path,
     args: argparse.Namespace,
+    features_cfg: Mapping[str, Any] | None = None,
 ) -> None:
     from qualisr_lab.regressors import extract_regressor_config, run_experiment
 
     regressor_cfg = extract_regressor_config({"regressors": dict(cfg)}, base_dir)
+    inferred_categories = collect_feature_categories(features_cfg)
+    if inferred_categories:
+        regressor_cfg = deep_update(
+            {"feature_categories": inferred_categories},
+            regressor_cfg,
+        )
     overrides: dict[str, Any] = {}
 
     if args.experiment_name is not None:
@@ -307,7 +362,8 @@ def run_pipeline(cfg: dict[str, Any], config_path: Path, args: argparse.Namespac
         elif section_name == "statistics":
             run_statistics(section_cfg)
         elif section_name == "regressors":
-            run_regressors_section(section_cfg, config_path.parent, args)
+            features_cfg = cfg.get("features", {})
+            run_regressors_section(section_cfg, config_path.parent, args, features_cfg=features_cfg)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
