@@ -1376,9 +1376,55 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
     }
 
 
+def extract_regressor_config(cfg: dict[str, Any], base_dir: Path | None = None) -> dict[str, Any]:
+    section = cfg.get("regressors")
+    if not isinstance(section, dict):
+        return cfg
+
+    controls = {
+        "enabled",
+        "make_plots",
+        "no_plots",
+        "config_path",
+        "config",
+        "overrides",
+    }
+    regressor_keys = {
+        "seed",
+        "experiment_name",
+        "test_size",
+        "scale_features",
+        "permutation_repeats",
+        "paths",
+        "score_preparation",
+        "dataset",
+        "features",
+        "models",
+    }
+
+    if "config_path" in section:
+        nested_path = Path(section["config_path"]).expanduser()
+        if not nested_path.is_absolute() and base_dir is not None:
+            nested_path = base_dir / nested_path
+        result = load_config(nested_path)
+    elif isinstance(section.get("config"), dict):
+        result = deepcopy(section["config"])
+    elif any(key in section for key in regressor_keys):
+        result = {key: deepcopy(value) for key, value in section.items() if key not in controls}
+    else:
+        return cfg
+
+    if isinstance(section.get("config"), dict) and "config_path" in section:
+        result = deep_update(result, section["config"])
+    if isinstance(section.get("overrides"), dict):
+        result = deep_update(result, section["overrides"])
+
+    return result
+
+
 def load_config(path: Path) -> dict[str, Any]:
     with open(path, encoding="utf-8") as handle:
-        return json.load(handle)
+        return extract_regressor_config(json.load(handle), path.parent)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

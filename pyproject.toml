@@ -68,6 +68,7 @@ qualisr-extract-features = "qualisr_lab.cli:extract_features_main"
 qualisr-apply-pca = "qualisr_lab.cli:apply_pca_main"
 qualisr-compute-stats = "qualisr_lab.cli:compute_stats_main"
 qualisr-run-regressors = "qualisr_lab.cli:run_regressors_main"
+qualisr-run-pipeline = "qualisr_lab.cli:run_pipeline_main"
 
 [tool.setuptools]
 packages = ["qualisr_lab", "scripts"]

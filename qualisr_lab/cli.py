@@ -11,6 +11,7 @@ SCRIPT_COMMANDS = {
     "extract-features": "scripts.get_image_features",
     "apply-pca": "scripts.apply_pca",
     "compute-stats": "scripts.compute_statistics",
+    "run-pipeline": "qualisr_lab.pipeline",
 }
 
 
@@ -35,6 +36,10 @@ def apply_pca_main() -> None:
 
 def compute_stats_main() -> None:
     _run_module_main("scripts.compute_statistics")
+
+
+def run_pipeline_main() -> None:
+    _run_module_main("qualisr_lab.pipeline")
 
 
 def _print_run_regressors_help() -> None:
