@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import re
 import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Sequence
@@ -35,12 +36,18 @@ NR_METRICS: Sequence[str] = (
 NOISE_COMPONENTS = 5
 NOISE_SEED = 42
 
+SUPPORTED_FEATURES: Sequence[str] = ("fr", "nr", "vgg", "resnet", "timm", "siglip", "gaussian", "uniform")
 DEFAULT_FEATURES: Sequence[str] = ("fr", "nr", "vgg", "resnet", "siglip", "gaussian", "uniform")
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
 
 
 LOGGER = logging.getLogger("get_image_features")
 T = TypeVar("T")
+
+
+def safe_column_prefix(name: str) -> str:
+    cleaned = re.sub(r"[^0-9a-zA-Z]+", "_", name.strip()).strip("_").lower()
+    return cleaned or "feature"
 
 
 def csv_path(path: Path | None) -> str:
@@ -310,21 +317,21 @@ def align_fr_images(
     return cropped_sr, cropped_ref
 
 
-def init_fr_models(device: torch.device) -> dict[str, object]:
+def init_fr_models(device: torch.device, metrics: Sequence[str]) -> dict[str, object]:
     import pyiqa
 
     models_dict = {}
-    for metric in FR_METRICS:
+    for metric in metrics:
         LOGGER.info("Initializing FR metric: %s", metric)
         models_dict[metric] = pyiqa.create_metric(metric, device=device)
     return models_dict
 
 
-def init_nr_models(device: torch.device) -> dict[str, object]:
+def init_nr_models(device: torch.device, metrics: Sequence[str]) -> dict[str, object]:
     import pyiqa
 
     models_dict = {}
-    for metric in NR_METRICS:
+    for metric in metrics:
         LOGGER.info("Initializing NR metric: %s", metric)
         models_dict[metric] = pyiqa.create_metric(metric, device=device)
     return models_dict
@@ -364,6 +371,23 @@ def init_resnet(device: torch.device) -> tuple[torch.nn.Module, transforms.Compo
     return model, transform
 
 
+def init_timm_encoder(model_name: str, device: torch.device, pretrained: bool = True) -> tuple[torch.nn.Module, object]:
+    import timm
+    from timm.data import create_transform, resolve_model_data_config
+
+    LOGGER.info("Initializing timm encoder: %s (pretrained=%s)", model_name, pretrained)
+    try:
+        model = timm.create_model(model_name, pretrained=pretrained, num_classes=0, global_pool="avg")
+    except TypeError:
+        model = timm.create_model(model_name, pretrained=pretrained, num_classes=0)
+    model = model.to(device)
+    model.eval()
+
+    data_config = resolve_model_data_config(model)
+    transform = create_transform(**data_config, is_training=False)
+    return model, transform
+
+
 def init_siglip(model_name: str, device: torch.device) -> tuple[object, object]:
     from transformers import AutoModel, AutoProcessor
 
@@ -374,6 +398,18 @@ def init_siglip(model_name: str, device: torch.device) -> tuple[object, object]:
     return model, processor
 
 
+def normalize_model_output(output: object) -> torch.Tensor:
+    if isinstance(output, (list, tuple)):
+        if not output:
+            raise ValueError("Model returned an empty output sequence")
+        output = output[0]
+    if not torch.is_tensor(output):
+        raise TypeError(f"Model output must be a torch.Tensor, got {type(output)!r}")
+    if output.ndim > 2:
+        output = torch.flatten(output, start_dim=1)
+    return output
+
+
 def extract_pretrained_features(
     image: Image.Image,
     model: torch.nn.Module,
@@ -382,7 +418,7 @@ def extract_pretrained_features(
 ) -> np.ndarray:
     with torch.no_grad():
         tensor = transform(image).unsqueeze(0).to(device)
-        features = model(tensor).flatten().detach().cpu().numpy().astype(np.float32)
+        features = normalize_model_output(model(tensor)).flatten().detach().cpu().numpy().astype(np.float32)
     return features
 
 
@@ -439,8 +475,8 @@ def parse_features(raw_features: str) -> list[str]:
         feature = part.strip().lower()
         if not feature:
             continue
-        if feature not in DEFAULT_FEATURES:
-            raise ValueError(f"Unknown feature '{feature}'. Supported: {', '.join(DEFAULT_FEATURES)}")
+        if feature not in SUPPORTED_FEATURES:
+            raise ValueError(f"Unknown feature '{feature}'. Supported: {', '.join(SUPPORTED_FEATURES)}")
         requested.append(feature)
 
     if not requested:
@@ -450,10 +486,48 @@ def parse_features(raw_features: str) -> list[str]:
     return deduped
 
 
+def parse_metric_list(raw_metrics: str | Sequence[str] | None, defaults: Sequence[str]) -> list[str]:
+    if raw_metrics is None:
+        return list(defaults)
+    if isinstance(raw_metrics, str):
+        parts = raw_metrics.split(",")
+    else:
+        parts = list(raw_metrics)
+
+    metrics = [str(part).strip() for part in parts if str(part).strip()]
+    if not metrics:
+        raise ValueError("Metric lists cannot be empty when explicitly provided.")
+    return list(dict.fromkeys(metrics))
+
+
+def parse_timm_encoders(specs: Sequence[str] | None) -> dict[str, str]:
+    encoders: dict[str, str] = {}
+    for spec in specs or ():
+        raw = str(spec).strip()
+        if not raw:
+            continue
+        if "=" in raw:
+            name, model_name = raw.split("=", 1)
+            name = name.strip()
+            model_name = model_name.strip()
+        else:
+            model_name = raw
+            name = safe_column_prefix(model_name)
+
+        if not name or not model_name:
+            raise ValueError(f"Invalid timm encoder spec '{spec}'. Expected NAME=MODEL or MODEL.")
+        if name in encoders:
+            raise ValueError(f"Duplicate timm encoder name '{name}'")
+
+        encoders[name] = model_name
+
+    return encoders
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Compute FR/NR/VGG/ResNet/SigLIP features for SR images and save one CSV. "
+            "Compute FR/NR/backbone/SigLIP features for SR images and save one CSV. "
             "SR methods are passed as METHOD=DIR. "
             "Reference image names are expected as <sr_stem>@<sr_method>@<ref_name>.<ext>."
         )
@@ -491,7 +565,38 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--features",
         default=",".join(DEFAULT_FEATURES),
-        help="Comma-separated subset of features: fr,nr,vgg,resnet,siglip,gaussian,uniform.",
+        help="Comma-separated subset of features: fr,nr,vgg,resnet,timm,siglip,gaussian,uniform.",
+    )
+    parser.add_argument(
+        "--fr-metrics",
+        default=",".join(FR_METRICS),
+        help=(
+            "Comma-separated PyIQA full-reference metrics to compute when fr is enabled. "
+            "Any pyiqa.create_metric name can be used."
+        ),
+    )
+    parser.add_argument(
+        "--nr-metrics",
+        default=",".join(NR_METRICS),
+        help=(
+            "Comma-separated PyIQA no-reference metrics to compute when nr is enabled. "
+            "Any pyiqa.create_metric name can be used."
+        ),
+    )
+    parser.add_argument(
+        "--timm-encoders",
+        nargs="*",
+        default=(),
+        metavar="NAME=MODEL",
+        help=(
+            "timm encoders to extract when timm is enabled. "
+            "Use NAME=MODEL for a stable column prefix, or MODEL to derive one automatically."
+        ),
+    )
+    parser.add_argument(
+        "--timm-no-pretrained",
+        action="store_true",
+        help="Initialize timm encoders without pretrained weights.",
     )
     parser.add_argument(
         "--siglip-model",
@@ -580,6 +685,9 @@ def main() -> None:
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(levelname)s: %(message)s")
 
     requested_features = parse_features(args.features)
+    fr_metrics = parse_metric_list(args.fr_metrics, FR_METRICS)
+    nr_metrics = parse_metric_list(args.nr_metrics, NR_METRICS)
+    timm_encoders = parse_timm_encoders(args.timm_encoders)
     device = resolve_device(args.device)
 
     sr_dirs = parse_named_directories(args.sr_dirs, "--sr-dirs")
@@ -611,6 +719,9 @@ def main() -> None:
     if "fr" in requested_features and gt_index is None and not ref_dirs:
         raise ValueError("FR metrics require at least one reference directory: --gt-dir and/or --ref-dirs")
 
+    if "timm" in requested_features and not timm_encoders:
+        raise ValueError("timm feature extraction requires at least one --timm-encoders entry")
+
     sr_indices = {name: DirectoryIndex(directory) for name, directory in sr_dirs.items()}
     ref_indices = {name: DirectoryIndex(directory) for name, directory in ref_dirs.items()}
 
@@ -619,11 +730,11 @@ def main() -> None:
 
     fr_models: dict[str, object] | None = None
     if "fr" in requested_features:
-        fr_models = init_fr_models(device)
+        fr_models = init_fr_models(device, fr_metrics)
 
     nr_models: dict[str, object] | None = None
     if "nr" in requested_features:
-        nr_models = init_nr_models(device)
+        nr_models = init_nr_models(device, nr_metrics)
 
     vgg_model: torch.nn.Module | None = None
     vgg_transform: transforms.Compose | None = None
@@ -634,6 +745,15 @@ def main() -> None:
     resnet_transform: transforms.Compose | None = None
     if "resnet" in requested_features:
         resnet_model, resnet_transform = init_resnet(device)
+
+    timm_models: dict[str, tuple[torch.nn.Module, object]] = {}
+    if "timm" in requested_features:
+        for encoder_name, model_name in timm_encoders.items():
+            timm_models[encoder_name] = init_timm_encoder(
+                model_name,
+                device,
+                pretrained=not args.timm_no_pretrained,
+            )
 
     siglip_model = None
     siglip_processor = None
@@ -714,7 +834,7 @@ def main() -> None:
                             f"Missing FR reference '{ref_name}' for {sr_path.name} ({match_mode} match)",
                             args.strict,
                         )
-                        for metric_name in FR_METRICS:
+                        for metric_name in fr_metrics:
                             row[f"{metric_name}_{ref_name}"] = np.nan
                         continue
 
@@ -738,7 +858,7 @@ def main() -> None:
                             f"Failed to prepare FR pair ({sr_path.name}, {ref_path.name}): {exc}",
                             args.strict,
                         )
-                        for metric_name in FR_METRICS:
+                        for metric_name in fr_metrics:
                             row[f"{metric_name}_{ref_name}"] = np.nan
                         continue
 
@@ -822,6 +942,38 @@ def main() -> None:
                         row[f"resnet_{index:05d}"] = float(value)
                 except Exception as exc:
                     maybe_raise_or_warn(f"ResNet extraction failed on {sr_path.name}: {exc}", args.strict)
+
+            if "timm" in requested_features and timm_models:
+                for encoder_name, (timm_model, timm_transform) in timm_models.items():
+                    prefix = safe_column_prefix(encoder_name)
+                    try:
+                        timm_features = timed_call(
+                            profiler,
+                            prefix,
+                            lambda sr_image=sr_image, timm_model=timm_model, timm_transform=timm_transform: (
+                                extract_pretrained_features(sr_image, timm_model, timm_transform, device)
+                            ),
+                            device,
+                        )
+                        if profiler is not None:
+                            profiler.records[prefix]["feature_count"] = float(len(timm_features))
+                        if args.profile_flops:
+                            profile_torch_flops(
+                                profiler,
+                                prefix,
+                                lambda sr_image=sr_image, timm_model=timm_model, timm_transform=timm_transform: (
+                                    extract_pretrained_features(sr_image, timm_model, timm_transform, device)
+                                ),
+                                device,
+                                feature_count=len(timm_features),
+                            )
+                        for index, value in enumerate(timm_features):
+                            row[f"{prefix}_{index:05d}"] = float(value)
+                    except Exception as exc:
+                        maybe_raise_or_warn(
+                            f"timm encoder '{encoder_name}' extraction failed on {sr_path.name}: {exc}",
+                            args.strict,
+                        )
 
             if "siglip" in requested_features and siglip_model is not None and siglip_processor is not None:
                 if lr_path is None:

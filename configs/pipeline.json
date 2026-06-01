@@ -34,7 +34,9 @@
             "device": "auto",
             "strict": false,
             "profile": false,
-            "profile_flops": false
+            "profile_flops": false,
+            "fr_metrics": ["psnr", "ssim", "lpips-vgg", "stlpips-vgg", "pieapp", "ahiq"],
+            "nr_metrics": ["musiq", "arniqa", "qalign", "unique", "paq2piq"]
         },
         "groups": {
             "nr": {
@@ -60,6 +62,16 @@
                 "features": ["resnet"],
                 "output": "features/resnet.csv",
                 "profile_output": "features/profiling/resnet_profile.csv"
+            },
+            "timm": {
+                "enabled": false,
+                "features": ["timm"],
+                "timm_encoders": {
+                    "convnext_tiny": "convnext_tiny",
+                    "vit_base_patch16_224": "vit_base_patch16_224"
+                },
+                "output": "features/timm.csv",
+                "profile_output": "features/profiling/timm_profile.csv"
             },
             "siglip": {
                 "enabled": true,

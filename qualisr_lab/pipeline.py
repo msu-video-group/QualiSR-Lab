@@ -68,6 +68,17 @@ def add_value(argv: list[str], flag: str, value: Any) -> None:
         argv.extend([flag, str(value)])
 
 
+def add_csv_value(argv: list[str], flag: str, value: Any) -> None:
+    if value is None:
+        return
+    if isinstance(value, str):
+        parsed = value
+    else:
+        parsed = ",".join(str(item) for item in as_list(value))
+    if parsed:
+        argv.extend([flag, parsed])
+
+
 def add_values(argv: list[str], flag: str, values: Any) -> None:
     parsed = [str(value) for value in as_list(values)]
     if parsed:
@@ -165,6 +176,9 @@ def run_feature_group(common: Mapping[str, Any], name: str, group: Mapping[str, 
     add_value(argv, "--lr-dir", merged.get("lr_dir"))
     add_named_specs(argv, "--ref-dirs", merged.get("ref_dirs"))
     add_value(argv, "--features", features_arg)
+    add_csv_value(argv, "--fr-metrics", merged.get("fr_metrics"))
+    add_csv_value(argv, "--nr-metrics", merged.get("nr_metrics"))
+    add_named_specs(argv, "--timm-encoders", merged.get("timm_encoders"))
     add_value(argv, "--siglip-model", merged.get("siglip_model"))
     add_value(argv, "--siglip-alpha", merged.get("siglip_alpha"))
     add_value(argv, "--noise-components", merged.get("noise_components"))
@@ -175,6 +189,7 @@ def run_feature_group(common: Mapping[str, Any], name: str, group: Mapping[str, 
     add_value(argv, "--log-level", merged.get("log_level"))
     add_bool(argv, "--profile", merged.get("profile"))
     add_bool(argv, "--profile-flops", merged.get("profile_flops"))
+    add_bool(argv, "--timm-no-pretrained", merged.get("timm_no_pretrained"))
     add_bool(argv, "--strict", merged.get("strict"))
     run_module_main("scripts.get_image_features", argv)
 

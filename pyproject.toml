@@ -26,6 +26,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Image Processing",
 ]
 dependencies = [
+  "icecream>=2.1",
   "matplotlib>=3.8",
   "numpy>=1.24",
   "pandas>=2.0",
@@ -44,6 +45,7 @@ regressors = [
 features = [
   "huggingface-hub[cli]>=0.23",
   "pyiqa>=0.1.15",
+  "timm>=1.0",
   "torch>=2.2",
   "torchvision>=0.17",
   "transformers>=4.40",
