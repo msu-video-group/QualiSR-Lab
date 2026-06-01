@@ -1,6 +1,6 @@
 {
     "references": {
-        "enabled": false,
+        "enabled": true,
         "lr_dir": "dataset/lr",
         "sr_dirs": {
             "PASD": "dataset/sr/PASD",
@@ -8,7 +8,7 @@
             "RealESRGAN": "dataset/sr/RealESRGAN"
         },
         "refs": ["bicubic", "span", "rlfn"],
-        "out_root": "references",
+        "out_root": "dataset/ref/",
         "ref_dirs": {},
         "output_ext": ".png",
         "scale": 4,
@@ -17,19 +17,19 @@
     },
 
     "features": {
-        "enabled": false,
+        "enabled": true,
         "common": {
             "sr_dirs": {
                 "PASD": "dataset/sr/PASD",
                 "SUPIR": "dataset/sr/SUPIR",
                 "RealESRGAN": "dataset/sr/RealESRGAN"
             },
-            "gt_dir": "dataset/gt",
+            "gt_dir": "dataset/hr",
             "lr_dir": "dataset/lr",
             "ref_dirs": {
-                "bicubic": "references/bicubic",
-                "span": "references/span",
-                "rlfn": "references/rlfn"
+                "bicubic": "dataset/ref/bicubic",
+                "span": "dataset/ref/span",
+                "rlfn": "dataset/ref/rlfn"
             },
             "device": "auto",
             "strict": false,
@@ -62,13 +62,13 @@
                 "profile_output": "features/profiling/resnet_profile.csv"
             },
             "siglip": {
-                "enabled": false,
+                "enabled": true,
                 "features": ["siglip"],
                 "output": "features/siglip.csv",
                 "profile_output": "features/profiling/siglip_profile.csv"
             },
             "noise": {
-                "enabled": false,
+                "enabled": true,
                 "features": ["gaussian", "uniform"],
                 "output": "features/noise.csv",
                 "profile_output": "features/profiling/noise_profile.csv"
@@ -77,7 +77,7 @@
     },
 
     "pca": {
-        "enabled": false,
+        "enabled": true,
         "common": {
             "n_components": [5],
             "output_dir": "features/pca",
@@ -102,7 +102,7 @@
     },
 
     "statistics": {
-        "enabled": false,
+        "enabled": true,
         "heatmap_dirs": {
             "PASD": "dataset/heatmaps/PASD",
             "SUPIR": "dataset/heatmaps/SUPIR",
