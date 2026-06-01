@@ -726,13 +726,32 @@ def _normalize_shap_values(shap_values: Any, X_test: pd.DataFrame) -> np.ndarray
     return shap_arr
 
 
-def plot_shap_importance(
-    model_name: str,
-    model: Any,
-    X_test: pd.DataFrame,
-    out_dir: Path,
-    cfg: dict[str, Any],
-) -> Path | None:
+def _xgboost_shap_values(model: Any, X_test: pd.DataFrame) -> np.ndarray:
+    try:
+        import xgboost as xgb
+    except ImportError as exc:
+        raise _missing_optional("xgboost", "regressors") from exc
+
+    booster = model.get_booster()
+    dmatrix = xgb.DMatrix(X_test, feature_names=list(X_test.columns))
+    contributions = np.asarray(booster.predict(dmatrix, pred_contribs=True), dtype=float)
+    if contributions.ndim == 3:
+        contributions = contributions[:, :, 0] if contributions.shape[2] == 1 else np.mean(contributions, axis=2)
+
+    expected_shape = (X_test.shape[0], X_test.shape[1] + 1)
+    if contributions.shape != expected_shape:
+        raise ValueError(
+            "Unexpected XGBoost SHAP contribution shape: "
+            f"{contributions.shape}; expected {expected_shape}"
+        )
+
+    return contributions[:, :-1]
+
+
+def compute_model_shap_values(model_name: str, model: Any, X_test: pd.DataFrame) -> np.ndarray | None:
+    if model_name == "xgb":
+        return _xgboost_shap_values(model, X_test)
+
     try:
         import shap
     except ImportError:
@@ -745,7 +764,26 @@ def plot_shap_importance(
         return None
 
     explainer = shap.TreeExplainer(model)
-    shap_arr = _normalize_shap_values(explainer.shap_values(X_test), X_test)
+    return _normalize_shap_values(explainer.shap_values(X_test), X_test)
+
+
+def plot_shap_importance(
+    model_name: str,
+    model: Any,
+    X_test: pd.DataFrame,
+    out_dir: Path,
+    cfg: dict[str, Any],
+) -> Path | None:
+    try:
+        shap_arr = compute_model_shap_values(model_name, model, X_test)
+    except Exception as exc:
+        warnings.warn(
+            f"Skipping SHAP plot for {model_display_name(model_name, cfg)}: {exc}",
+            stacklevel=2,
+        )
+        return None
+    if shap_arr is None:
+        return None
 
     shap_values_path = out_dir / f"shap_values_{model_name}.csv"
     pd.DataFrame(shap_arr, columns=X_test.columns).to_csv(shap_values_path, index=False)
