@@ -13,7 +13,7 @@
 
 <sup>3</sup>MSU Institute for Artificial Intelligence, Lomonosov Moscow State University
 
-🚩 Submitted to [ACM MM Open Source Software 2026](https://2026.acmmm.org/site/call-open-source.html).
+🚩 *Submitted to [ACM MM 2026 Open Source Software](https://2026.acmmm.org/site/call-open-source.html).*
 
 ## 🔎 Overview
 
@@ -101,24 +101,22 @@ To download the dataset and run feature extraction, PCA, artifact statistics, an
 
 ```bash
 python -m pip install -e ".[features,regressors]"
-bash scripts/reproduce_pipeline.sh
+qualisr-run-pipeline --config configs/pipeline.json
 ```
 
-<!-- Useful overrides:
+You can also use BASH script:
 
 ```bash
-DEVICE=cuda SAVE_SVG=1 bash scripts/reproduce_pipeline.sh
-PROFILE=1 PROFILE_FLOPS=1 bash scripts/reproduce_pipeline.sh
-DATASET_SOURCE=gdrive bash scripts/reproduce_pipeline.sh
-DATASET_SOURCE=archive DATASET_ARCHIVE=/path/to/grounding_dataset.zip bash scripts/reproduce_pipeline.sh
-DATASET_SOURCE=skip DATASET_DIR=dataset bash scripts/reproduce_pipeline.sh
-``` -->
+bash scripts/reproduce_pipeline.sh
+```
 
 The script writes feature-group CSVs such as `features/fr.csv`, `features/nr.csv`, and `features/vgg.csv`, PCA outputs to `features/pca/`, prepared scores to `scores/`, and plots/results to `plots/`.
 
 ---
 
 ## 🚀 Workflow
+
+You may either launch the whole pipeline in a single command with your JSON config as in previous section or do each step separately:
 
 ### Step 0 (optional): Prepare reference images
 
@@ -219,8 +217,8 @@ The first notebook cell describes the workflow for running experiments individua
 
 Example outputs:
 
-![Feature importances](plots/example@pca5/all_models_importances.png)
-![Correlations](plots/example@pca5/correlations.png)
+![Feature importances](plots/example@pca5/importances/all_models_importances.png)
+![Correlations](plots/example@pca5/correlations/correlations.png)
 
 ---
 
@@ -278,6 +276,7 @@ This project uses features extracted from:
 - [VGG](https://arxiv.org/abs/1409.1556)
 - [ResNet](https://arxiv.org/abs/1512.03385)
 - [SigLIP](https://arxiv.org/abs/2303.15343)
+- any encoders from [timm](https://github.com/huggingface/pytorch-image-models)
 
 Because these embeddings are often high-dimensional, Principal Component Analysis (PCA) can be applied before training regressors.
 

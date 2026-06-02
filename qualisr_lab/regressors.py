@@ -10,6 +10,7 @@ import re
 import time
 import warnings
 from copy import deepcopy
+from fnmatch import fnmatch
 from functools import reduce
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from scipy.stats import pearsonr, spearmanr
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.inspection import permutation_importance
 from sklearn.linear_model import ElasticNet, Lasso, LinearRegression, Ridge
+from sklearn.feature_selection import chi2, f_regression, mutual_info_regression
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import MinMaxScaler
@@ -195,6 +197,22 @@ def safe_corr(y_true: Any, y_pred: Any) -> tuple[float, float]:
 def ensure_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def regressor_output_dirs(out_dir: Path) -> dict[str, Path]:
+    """Create and return the organized output folders for one regressor run."""
+    names = {
+        "metadata": "metadata",
+        "predictions": "predictions",
+        "correlations": "correlations",
+        "importances": "importances",
+        "shap": "shap",
+        "feature_analysis": "feature_analysis",
+        "profiling": "profiling",
+        "outliers": "outliers",
+        "feature_selection": "feature_selection",
+    }
+    return {key: ensure_dir(out_dir / folder) for key, folder in names.items()}
 
 
 def relativize_path_value(value: object) -> object:
@@ -1509,6 +1527,471 @@ def plot_feature_cross_correlation_matrix(
     return out_path
 
 
+def analysis_enabled(cfg: dict[str, Any], section: str) -> bool:
+    section_cfg = cfg.get("analysis", {}).get(section, {})
+    return bool(section_cfg.get("enabled", False)) if isinstance(section_cfg, dict) else False
+
+
+def resolve_feature_specs(specs: Any, columns: pd.Index) -> list[str]:
+    if specs is None or specs == []:
+        return list(columns)
+    requested = _config_list(specs)
+    selected: list[str] = []
+    for spec in requested:
+        matches = [column for column in columns if column == spec or fnmatch(column, spec)]
+        if not matches and spec.endswith("_"):
+            matches = [column for column in columns if column.startswith(spec)]
+        if not matches and spec in columns:
+            matches = [spec]
+        selected.extend(matches)
+    return list(dict.fromkeys(selected))
+
+
+def compute_feature_outliers(
+    X: pd.DataFrame,
+    names: pd.Series,
+    cfg: dict[str, Any],
+) -> pd.DataFrame:
+    numeric = X.apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
+    means = numeric.mean(axis=0, skipna=True)
+    stds = numeric.std(axis=0, skipna=True).replace(0, np.nan)
+    z = ((numeric - means) / stds).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    max_abs_z = z.abs().max(axis=1)
+    mean_abs_z = z.abs().mean(axis=1)
+    euclidean_z = np.sqrt((z**2).sum(axis=1))
+    strongest_feature = z.abs().idxmax(axis=1)
+
+    threshold = float(cfg.get("analysis", {}).get("outliers", {}).get("feature_z_threshold", 3.0))
+    return pd.DataFrame(
+        {
+            "name": names.reset_index(drop=True),
+            "max_abs_z": max_abs_z.reset_index(drop=True),
+            "mean_abs_z": mean_abs_z.reset_index(drop=True),
+            "euclidean_z": pd.Series(euclidean_z).reset_index(drop=True),
+            "strongest_feature": strongest_feature.reset_index(drop=True),
+            "is_outlier": max_abs_z.reset_index(drop=True) >= threshold,
+        }
+    ).sort_values("max_abs_z", ascending=False).reset_index(drop=True)
+
+
+def compute_prediction_outliers(predictions_by_model: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    if not predictions_by_model:
+        return pd.DataFrame()
+
+    base = None
+    residual_columns = []
+    prediction_columns = []
+    for model_name, predictions in predictions_by_model.items():
+        current = predictions[["name", "mos", "prediction"]].copy()
+        pred_col = f"prediction_{model_name}"
+        residual_col = f"abs_error_{model_name}"
+        current = current.rename(columns={"prediction": pred_col})
+        current[residual_col] = (current[pred_col] - current["mos"]).abs()
+        residual_columns.append(residual_col)
+        prediction_columns.append(pred_col)
+        base = current if base is None else base.merge(current.drop(columns=["mos"]), on="name", how="outer")
+
+    if base is None:
+        return pd.DataFrame()
+
+    base["max_abs_error"] = base[residual_columns].max(axis=1)
+    base["mean_abs_error"] = base[residual_columns].mean(axis=1)
+    base["prediction_std"] = base[prediction_columns].std(axis=1)
+    base["worst_model"] = base[residual_columns].idxmax(axis=1).str.replace("abs_error_", "", regex=False)
+    return base.sort_values("max_abs_error", ascending=False).reset_index(drop=True)
+
+
+def plot_outlier_scores(
+    df: pd.DataFrame,
+    score_column: str,
+    label_column: str,
+    title: str,
+    out_path: Path,
+    cfg: dict[str, Any],
+) -> Path | None:
+    if df.empty or score_column not in df.columns:
+        return None
+
+    top_n = int(cfg.get("analysis", {}).get("outliers", {}).get("top_n", 25))
+    plot_df = df.head(top_n).sort_values(score_column, ascending=True)
+    labels = plot_df[label_column].astype(str).tolist()
+    default_height = max(5, 0.35 * len(plot_df))
+
+    with plt.rc_context(plot_rc_params(cfg)):
+        fig, ax = plt.subplots(figsize=tuple(cfg.get("plot", {}).get("outlier_figsize", [10, default_height])))
+        ax.barh(np.arange(len(plot_df)), plot_df[score_column], color="#536dfe")
+        ax.set_yticks(np.arange(len(plot_df)))
+        ax.set_yticklabels(labels)
+        ax.set_xlabel(score_column.replace("_", " "))
+        ax.set_title(title)
+        fig.tight_layout()
+
+    save_plot(fig, out_path, cfg)
+    plt.close(fig)
+    return out_path
+
+
+def save_outlier_analysis(
+    X_all: pd.DataFrame,
+    names_all: pd.Series,
+    predictions_by_model: dict[str, pd.DataFrame],
+    out_dir: Path,
+    cfg: dict[str, Any],
+) -> dict[str, str | None]:
+    outlier_dir = ensure_dir(out_dir / "outliers")
+    paths: dict[str, str | None] = {}
+
+    feature_outliers = compute_feature_outliers(X_all, names_all, cfg)
+    feature_csv = outlier_dir / "feature_outliers.csv"
+    feature_outliers.to_csv(feature_csv, index=False)
+    paths["feature_outliers_csv"] = str(feature_csv)
+    feature_plot = plot_outlier_scores(
+        feature_outliers,
+        "max_abs_z",
+        "name",
+        "Feature-Space Outliers",
+        outlier_dir / "feature_outliers.png",
+        cfg,
+    )
+    paths["feature_outliers_plot"] = str(feature_plot) if feature_plot else None
+
+    prediction_outliers = compute_prediction_outliers(predictions_by_model)
+    if not prediction_outliers.empty:
+        prediction_csv = outlier_dir / "prediction_outliers.csv"
+        prediction_outliers.to_csv(prediction_csv, index=False)
+        paths["prediction_outliers_csv"] = str(prediction_csv)
+        prediction_plot = plot_outlier_scores(
+            prediction_outliers,
+            "max_abs_error",
+            "name",
+            "Prediction Outliers",
+            outlier_dir / "prediction_outliers.png",
+            cfg,
+        )
+        paths["prediction_outliers_plot"] = str(prediction_plot) if prediction_plot else None
+
+    return paths
+
+
+def binned_target(y: pd.Series, bins: int) -> pd.Series:
+    numeric = pd.to_numeric(y, errors="coerce")
+    try:
+        return pd.qcut(numeric, q=bins, duplicates="drop", labels=False)
+    except ValueError:
+        return pd.Series(np.nan, index=y.index)
+
+
+def fisher_scores(X: pd.DataFrame, y_bins: pd.Series) -> pd.Series:
+    scores = {}
+    valid_classes = y_bins.dropna().unique()
+    for feature in X.columns:
+        values = pd.to_numeric(X[feature], errors="coerce")
+        valid = values.notna() & y_bins.notna()
+        if valid.sum() < 2:
+            scores[feature] = np.nan
+            continue
+        overall_mean = values[valid].mean()
+        between = 0.0
+        within = 0.0
+        for klass in valid_classes:
+            mask = valid & (y_bins == klass)
+            if not mask.any():
+                continue
+            class_values = values[mask]
+            between += len(class_values) * float((class_values.mean() - overall_mean) ** 2)
+            within += len(class_values) * float(class_values.var(ddof=0))
+        scores[feature] = between / within if within > 0 else np.nan
+    return pd.Series(scores)
+
+
+def compute_feature_analysis_metrics(
+    X: pd.DataFrame,
+    y: pd.Series,
+    cfg: dict[str, Any],
+) -> pd.DataFrame:
+    analysis_cfg = cfg.get("analysis", {}).get("feature_metrics", {})
+    selected = resolve_feature_specs(analysis_cfg.get("features"), X.columns)
+    X_selected = X[selected].apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
+    X_selected = X_selected.fillna(X_selected.median(axis=0)).fillna(0.0)
+    y_numeric = pd.to_numeric(y, errors="coerce")
+
+    rows = pd.DataFrame({"feature": selected})
+    rows["pretty_feature"] = get_pretty_labels(selected, cfg)
+    rows["family"] = [feature_family(feature, cfg) for feature in selected]
+
+    try:
+        rows["mutual_info"] = mutual_info_regression(
+            X_selected,
+            y_numeric,
+            random_state=cfg["seed"],
+        )
+    except Exception as exc:
+        warnings.warn(f"Mutual information feature analysis failed: {exc}", stacklevel=2)
+        rows["mutual_info"] = np.nan
+
+    try:
+        f_values, p_values = f_regression(X_selected, y_numeric)
+        rows["f_score"] = f_values
+        rows["f_pvalue"] = p_values
+    except Exception as exc:
+        warnings.warn(f"F-score feature analysis failed: {exc}", stacklevel=2)
+        rows["f_score"] = np.nan
+        rows["f_pvalue"] = np.nan
+
+    bins = int(analysis_cfg.get("target_bins", 5))
+    y_bins = binned_target(y_numeric, bins)
+    try:
+        nonnegative = pd.DataFrame(
+            MinMaxScaler().fit_transform(X_selected),
+            columns=X_selected.columns,
+            index=X_selected.index,
+        )
+        chi_values, chi_pvalues = chi2(nonnegative, y_bins)
+        rows["chi2"] = chi_values
+        rows["chi2_pvalue"] = chi_pvalues
+    except Exception as exc:
+        warnings.warn(f"Chi-square feature analysis failed: {exc}", stacklevel=2)
+        rows["chi2"] = np.nan
+        rows["chi2_pvalue"] = np.nan
+
+    rows["fisher_score"] = fisher_scores(X_selected, y_bins).reindex(selected).to_numpy()
+    rank_by = str(analysis_cfg.get("rank_by", "mutual_info"))
+    if rank_by not in rows.columns:
+        rank_by = "mutual_info"
+    rows["rank_score"] = rows[rank_by]
+    return rows.sort_values("rank_score", ascending=False).reset_index(drop=True)
+
+
+def plot_feature_analysis_metrics(metrics_df: pd.DataFrame, out_dir: Path, cfg: dict[str, Any]) -> Path | None:
+    if metrics_df.empty:
+        return None
+
+    analysis_cfg = cfg.get("analysis", {}).get("feature_metrics", {})
+    rank_by = str(analysis_cfg.get("rank_by", "mutual_info"))
+    if rank_by not in metrics_df.columns:
+        rank_by = "mutual_info"
+    top_n = int(analysis_cfg.get("top_n", 40))
+    plot_df = metrics_df.head(top_n).sort_values(rank_by, ascending=True)
+    default_height = max(6, 0.35 * len(plot_df))
+
+    with plt.rc_context(plot_rc_params(cfg)):
+        fig, ax = plt.subplots(figsize=tuple(cfg.get("plot", {}).get("feature_metric_figsize", [10, default_height])))
+        ax.barh(np.arange(len(plot_df)), plot_df[rank_by], color="#0077b6")
+        ax.set_yticks(np.arange(len(plot_df)))
+        ax.set_yticklabels(plot_df["pretty_feature"].tolist())
+        ax.set_xlabel(rank_by.replace("_", " "))
+        ax.set_title("Feature Analysis Ranking")
+        fig.tight_layout()
+
+    out_path = out_dir / "feature_analysis_metrics.png"
+    save_plot(fig, out_path, cfg)
+    plt.close(fig)
+    return out_path
+
+
+def save_feature_analysis_metrics(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    out_dir: Path,
+    cfg: dict[str, Any],
+) -> dict[str, str | None]:
+    feature_dir = ensure_dir(out_dir / "feature_analysis")
+    metrics = compute_feature_analysis_metrics(X_train, y_train, cfg)
+    metrics_csv = feature_dir / "feature_analysis_metrics.csv"
+    metrics.to_csv(metrics_csv, index=False)
+    plot_path = plot_feature_analysis_metrics(metrics, feature_dir, cfg)
+    return {
+        "feature_analysis_metrics_csv": str(metrics_csv),
+        "feature_analysis_metrics_plot": str(plot_path) if plot_path else None,
+    }
+
+
+def init_analysis_model(cfg: dict[str, Any], model_name: str, params: dict[str, Any] | None = None) -> Any:
+    local_cfg = deepcopy(cfg)
+    local_cfg["models"] = {model_name: {"enabled": True, "params": params or {}}}
+    return init_models(local_cfg)[0][1]
+
+
+def evaluate_feature_subset(
+    cfg: dict[str, Any],
+    model_name: str,
+    model_params_override: dict[str, Any],
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+    features: list[str],
+) -> tuple[float, float]:
+    if not features:
+        return np.nan, np.nan
+    model = init_analysis_model(cfg, model_name, model_params_override)
+    model.fit(X_train[features], y_train)
+    pred = model.predict(X_test[features])
+    return safe_corr(y_test, pred)
+
+
+def feature_selection_score(plcc: float, srcc: float, metric: str) -> float:
+    value = srcc if metric == "srcc" else plcc
+    return value if not np.isnan(value) else -np.inf
+
+
+def forward_selection(
+    cfg: dict[str, Any],
+    features: list[str],
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+) -> pd.DataFrame:
+    sel_cfg = cfg.get("analysis", {}).get("feature_selection", {})
+    model_name = str(sel_cfg.get("model", "ridge"))
+    model_params_override = dict(sel_cfg.get("model_params", {}))
+    metric = str(sel_cfg.get("metric", "srcc"))
+    max_features = min(int(sel_cfg.get("max_features", len(features))), len(features))
+    selected: list[str] = []
+    remaining = list(features)
+    rows = []
+
+    for step in range(1, max_features + 1):
+        candidates = []
+        for feature in remaining:
+            trial = selected + [feature]
+            plcc, srcc = evaluate_feature_subset(
+                cfg, model_name, model_params_override, X_train, y_train, X_test, y_test, trial
+            )
+            candidates.append((feature_selection_score(plcc, srcc, metric), feature, plcc, srcc))
+        if not candidates:
+            break
+        _, best_feature, best_plcc, best_srcc = max(candidates, key=lambda item: item[0])
+        selected.append(best_feature)
+        remaining.remove(best_feature)
+        rows.append(
+            {
+                "direction": "forward",
+                "step": step,
+                "n_features": len(selected),
+                "changed_feature": best_feature,
+                "plcc": best_plcc,
+                "srcc": best_srcc,
+                "features": "|".join(selected),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def backward_elimination(
+    cfg: dict[str, Any],
+    features: list[str],
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+) -> pd.DataFrame:
+    sel_cfg = cfg.get("analysis", {}).get("feature_selection", {})
+    model_name = str(sel_cfg.get("model", "ridge"))
+    model_params_override = dict(sel_cfg.get("model_params", {}))
+    metric = str(sel_cfg.get("metric", "srcc"))
+    min_features = max(1, int(sel_cfg.get("min_features", 1)))
+    selected = list(features)
+    rows = []
+
+    initial_plcc, initial_srcc = evaluate_feature_subset(
+        cfg, model_name, model_params_override, X_train, y_train, X_test, y_test, selected
+    )
+    rows.append(
+        {
+            "direction": "backward",
+            "step": 0,
+            "n_features": len(selected),
+            "changed_feature": "",
+            "plcc": initial_plcc,
+            "srcc": initial_srcc,
+            "features": "|".join(selected),
+        }
+    )
+
+    step = 0
+    while len(selected) > min_features:
+        step += 1
+        candidates = []
+        for feature in selected:
+            trial = [item for item in selected if item != feature]
+            plcc, srcc = evaluate_feature_subset(
+                cfg, model_name, model_params_override, X_train, y_train, X_test, y_test, trial
+            )
+            candidates.append((feature_selection_score(plcc, srcc, metric), feature, plcc, srcc, trial))
+        _, removed_feature, best_plcc, best_srcc, selected = max(candidates, key=lambda item: item[0])
+        rows.append(
+            {
+                "direction": "backward",
+                "step": step,
+                "n_features": len(selected),
+                "changed_feature": removed_feature,
+                "plcc": best_plcc,
+                "srcc": best_srcc,
+                "features": "|".join(selected),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def plot_feature_selection(selection_df: pd.DataFrame, out_dir: Path, cfg: dict[str, Any]) -> Path | None:
+    if selection_df.empty:
+        return None
+
+    metric = str(cfg.get("analysis", {}).get("feature_selection", {}).get("metric", "srcc"))
+    with plt.rc_context(plot_rc_params(cfg)):
+        fig, ax = plt.subplots(figsize=tuple(cfg.get("plot", {}).get("feature_selection_figsize", [8, 5])))
+        for direction, group in selection_df.groupby("direction"):
+            group = group.sort_values("n_features")
+            ax.plot(group["n_features"], group[metric], marker="o", linewidth=1.8, label=direction)
+        ax.set_xlabel("Number of features")
+        ax.set_ylabel(metric.upper())
+        ax.set_title("Feature Selection Performance")
+        ax.grid(alpha=0.25)
+        ax.legend()
+        fig.tight_layout()
+
+    out_path = out_dir / "feature_selection_performance.png"
+    save_plot(fig, out_path, cfg)
+    plt.close(fig)
+    return out_path
+
+
+def save_feature_selection_analysis(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+    out_dir: Path,
+    cfg: dict[str, Any],
+) -> dict[str, str | None]:
+    selection_dir = ensure_dir(out_dir / "feature_selection")
+    sel_cfg = cfg.get("analysis", {}).get("feature_selection", {})
+    features = resolve_feature_specs(sel_cfg.get("features"), X_train.columns)
+    if not features:
+        raise ValueError("Feature selection has no matching features")
+    max_features = sel_cfg.get("max_features")
+    if max_features is not None:
+        features = features[: max(1, int(max_features))]
+    directions = set(_config_list(sel_cfg.get("directions", ["forward"])))
+
+    frames = []
+    if "forward" in directions:
+        frames.append(forward_selection(cfg, features, X_train, y_train, X_test, y_test))
+    if "backward" in directions:
+        frames.append(backward_elimination(cfg, features, X_train, y_train, X_test, y_test))
+
+    selection_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    selection_csv = selection_dir / "feature_selection.csv"
+    selection_df.to_csv(selection_csv, index=False)
+    plot_path = plot_feature_selection(selection_df, selection_dir, cfg)
+    return {
+        "feature_selection_csv": str(selection_csv),
+        "feature_selection_plot": str(plot_path) if plot_path else None,
+    }
+
+
 def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, Any]:
     np.random.seed(cfg["seed"])
 
@@ -1520,9 +2003,10 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
     except KeyError:
         run_name = f"{cfg['experiment_name']}"
     out_dir = ensure_dir(Path(cfg["paths"]["plots_root"]) / run_name)
+    output_dirs = regressor_output_dirs(out_dir)
 
     if cfg.get("save_dataset_snapshot", False):
-        relativize_path_columns(dataset).to_csv(out_dir / "dataset_snapshot.csv", index=False)
+        relativize_path_columns(dataset).to_csv(output_dirs["metadata"] / "dataset_snapshot.csv", index=False)
 
     results = []
     importance_paths: dict[str, str | None] = {}
@@ -1570,10 +2054,10 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
 
         results.append({"model": model_name, "plcc": plcc, "srcc": srcc, "source": "regressor"})
         if make_plots and plot_enabled(cfg, "importance"):
-            imp_path = plot_importance(model_name, model, X_test, y_test, out_dir, cfg)
+            imp_path = plot_importance(model_name, model, X_test, y_test, output_dirs["importances"], cfg)
             importance_paths[model_name] = str(imp_path) if imp_path else None
         if make_plots and plot_enabled(cfg, "shap"):
-            shap_path = plot_shap_importance(model_name, model, X_test, out_dir, cfg)
+            shap_path = plot_shap_importance(model_name, model, X_test, output_dirs["shap"], cfg)
             shap_paths[model_name] = str(shap_path) if shap_path else None
 
     results.extend(compute_metric_comparisons(cfg, dataset, y_test))
@@ -1582,8 +2066,8 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
         results.append(
             {
                 "model": "mean",
-                "plcc": float(np.mean(all_plcc)),
-                "srcc": float(np.mean(all_srcc)),
+                "plcc": float(np.nanmean(all_plcc)),
+                "srcc": float(np.nanmean(all_srcc)),
                 "source": "summary",
             }
         )
@@ -1598,9 +2082,9 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
         )
 
     results_df = pd.DataFrame(results).sort_values("srcc", ascending=False).reset_index(drop=True)
-    results_df.to_csv(out_dir / "correlations.csv", index=False)
+    results_df.to_csv(output_dirs["correlations"] / "correlations.csv", index=False)
     for model_name, predictions in predictions_by_model.items():
-        predictions.to_csv(out_dir / f"predictions_{model_name}.csv", index=False)
+        predictions.to_csv(output_dirs["predictions"] / f"predictions_{model_name}.csv", index=False)
 
     regressor_profile_path = None
     regressor_total_profile_path = None
@@ -1613,7 +2097,7 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
 
         feature_profile_summary = load_feature_profile_summary(cfg, X_train.columns)
         if not feature_profile_summary.empty:
-            feature_profile_summary_path = out_dir / "regressor_feature_profile_summary.csv"
+            feature_profile_summary_path = output_dirs["profiling"] / "regressor_feature_profile_summary.csv"
             feature_profile_summary.to_csv(feature_profile_summary_path, index=False)
 
             total_profile = build_regressor_total_profile(regressor_profile, feature_profile_summary)
@@ -1623,10 +2107,20 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
                 total_profile.to_csv(regressor_total_profile_path, index=False)
 
     feature_correlations = compute_feature_correlations(X_test, y_test, cfg)
-    feature_correlations.to_csv(out_dir / "feature_correlations.csv", index=False)
+    feature_correlations.to_csv(output_dirs["feature_analysis"] / "feature_correlations.csv", index=False)
     X_all = pd.concat([X_train, X_test], axis=0).sort_index()
     feature_cross_correlations = compute_feature_cross_correlations(X_all, cfg)
-    feature_cross_correlations.to_csv(out_dir / "feature_cross_correlations.csv")
+    feature_cross_correlations.to_csv(output_dirs["feature_analysis"] / "feature_cross_correlations.csv")
+
+    analysis_paths: dict[str, str | None] = {}
+    name_col = cfg["dataset"]["name_column"]
+    names_all = dataset.loc[X_all.index, name_col].reset_index(drop=True)
+    if analysis_enabled(cfg, "outliers"):
+        analysis_paths.update(save_outlier_analysis(X_all, names_all, predictions_by_model, out_dir, cfg))
+    if analysis_enabled(cfg, "feature_metrics"):
+        analysis_paths.update(save_feature_analysis_metrics(X_train, y_train, out_dir, cfg))
+    if analysis_enabled(cfg, "feature_selection"):
+        analysis_paths.update(save_feature_selection_analysis(X_train, y_train, X_test, y_test, out_dir, cfg))
 
     combined_importance_path = None
     combined_shap_importance_path = None
@@ -1637,21 +2131,26 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
     prediction_scatter_path = None
     if make_plots:
         if plot_enabled(cfg, "all_importances"):
-            combined_importance_path = plot_all_importances(importance_paths, out_dir, cfg)
+            combined_importance_path = plot_all_importances(importance_paths, output_dirs["importances"], cfg)
         if plot_enabled(cfg, "all_shap_importances"):
-            combined_shap_importance_path = plot_all_shap_importances(shap_paths, out_dir, cfg)
+            combined_shap_importance_path = plot_all_shap_importances(shap_paths, output_dirs["shap"], cfg)
         if plot_enabled(cfg, "correlations"):
-            correlations_path = plot_correlations(results_df, out_dir, cfg)
+            correlations_path = plot_correlations(results_df, output_dirs["correlations"], cfg)
         if plot_enabled(cfg, "feature_correlations"):
-            feature_correlations_path = plot_feature_correlations(feature_correlations, results_df, out_dir, cfg)
+            feature_correlations_path = plot_feature_correlations(
+                feature_correlations,
+                results_df,
+                output_dirs["feature_analysis"],
+                cfg,
+            )
         if plot_enabled(cfg, "feature_cross_correlation_matrix"):
             feature_cross_correlations_path = plot_feature_cross_correlation_matrix(
                 feature_cross_correlations,
-                out_dir,
+                output_dirs["feature_analysis"],
                 cfg,
             )
         if plot_enabled(cfg, "prediction_scatter"):
-            prediction_scatter_path = plot_prediction_scatter(predictions_by_model, out_dir, cfg)
+            prediction_scatter_path = plot_prediction_scatter(predictions_by_model, output_dirs["predictions"], cfg)
         if "source" in results_df.columns:
             without_metrics = results_df[results_df["source"] != "metric"].copy()
         else:
@@ -1659,21 +2158,23 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
         if plot_enabled(cfg, "correlations_without_metrics") and not without_metrics.empty:
             correlations_without_metrics_path = plot_correlations(
                 without_metrics,
-                out_dir,
+                output_dirs["correlations"],
                 cfg,
                 filename="correlations_without_metrics.png",
                 title="Regressor Correlation Scores",
             )
 
-    with open(out_dir / "config.json", "w", encoding="utf-8") as handle:
+    with open(output_dirs["metadata"] / "config.json", "w", encoding="utf-8") as handle:
         json.dump(cfg, handle, indent=2)
 
     return {
         "dataset": dataset,
         "results": results_df,
         "output_dir": out_dir,
+        "output_dirs": {name: str(path) for name, path in output_dirs.items()},
         "importance_paths": importance_paths,
         "shap_paths": shap_paths,
+        "analysis_paths": analysis_paths,
         "all_importances_path": str(combined_importance_path) if combined_importance_path else None,
         "all_shap_importances_path": (
             str(combined_shap_importance_path) if combined_shap_importance_path else None
@@ -1767,7 +2268,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help=(
             "Output CSV path for regressor runtime/FLOPs profile. "
-            "Implies --profile. Default: <run_output>/regressor_profile.csv."
+            "Implies --profile. Default: <run_output>/profiling/regressor_profile.csv."
         ),
     )
     parser.add_argument(
@@ -1775,7 +2276,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help=(
             "Output CSV path for feature+regressor runtime/FLOPs totals when feature profile data exists. "
-            "Default: <run_output>/regressor_total_profile.csv."
+            "Default: <run_output>/profiling/regressor_total_profile.csv."
         ),
     )
     parser.add_argument(
