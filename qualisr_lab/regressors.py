@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import time
@@ -22,10 +23,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr, spearmanr
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.inspection import permutation_importance
+from sklearn.linear_model import ElasticNet, Lasso, LinearRegression, Ridge
 from sklearn.model_selection import GroupShuffleSplit
+from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.svm import LinearSVR, SVR
 
 from qualisr_lab.profiling import (
     build_regressor_profile_row,
@@ -41,6 +45,17 @@ PRETTY_FEATURE_NAMES = {
     "catboost": "CatBoost",
     "randomforest": "Random Forest",
     "xgb": "XGBoost",
+    "gradientboosting": "Gradient Boosting",
+    "gradientboost": "Gradient Boosting",
+    "lgbm": "LightGBM",
+    "lightgbm": "LightGBM",
+    "linear": "Linear Regression",
+    "ridge": "Ridge",
+    "lasso": "Lasso",
+    "elasticnet": "ElasticNet",
+    "svr": "SVR",
+    "linear_svr": "Linear SVR",
+    "mlp": "MLP",
     "best": "Best",
     "mean_features": "Mean Features",
     "median_features": "Median Features",
@@ -710,40 +725,168 @@ def save_plot(fig: plt.Figure, out_path: Path, cfg: dict[str, Any]) -> None:
         fig.savefig(out_path.with_suffix(".svg"), **savefig_kwargs)
 
 
+def model_params(cfg: dict[str, Any], model_name: str, defaults: dict[str, Any] | None = None) -> dict[str, Any]:
+    params = dict(defaults or {})
+    params.update(cfg["models"].get(model_name, {}).get("params", {}))
+    return params
+
+
+def init_xgb_model(cfg: dict[str, Any], model_name: str) -> Any:
+    try:
+        import xgboost as xgb
+    except ImportError as exc:
+        raise _missing_optional("xgboost", "regressors") from exc
+
+    return xgb.XGBRegressor(**model_params(cfg, model_name, {"random_state": cfg["seed"], "verbosity": 0}))
+
+
+def init_catboost_model(cfg: dict[str, Any], model_name: str) -> Any:
+    try:
+        from catboost import CatBoostRegressor
+    except ImportError as exc:
+        raise _missing_optional("catboost", "regressors") from exc
+
+    return CatBoostRegressor(**model_params(cfg, model_name, {"random_state": cfg["seed"], "verbose": 0}))
+
+
+def init_lgbm_model(cfg: dict[str, Any], model_name: str) -> Any:
+    try:
+        from lightgbm import LGBMRegressor
+    except ImportError as exc:
+        raise _missing_optional("lightgbm", "regressors") from exc
+
+    return LGBMRegressor(**model_params(cfg, model_name, {"random_state": cfg["seed"], "verbosity": -1}))
+
+
+MODEL_FACTORIES = {
+    "randomforest": lambda cfg, name: RandomForestRegressor(
+        **model_params(cfg, name, {"random_state": cfg["seed"]})
+    ),
+    "gradientboosting": lambda cfg, name: GradientBoostingRegressor(
+        **model_params(cfg, name, {"random_state": cfg["seed"]})
+    ),
+    "gradientboost": lambda cfg, name: GradientBoostingRegressor(
+        **model_params(cfg, name, {"random_state": cfg["seed"]})
+    ),
+    "xgb": init_xgb_model,
+    "catboost": init_catboost_model,
+    "lgbm": init_lgbm_model,
+    "lightgbm": init_lgbm_model,
+    "linear": lambda cfg, name: LinearRegression(**model_params(cfg, name)),
+    "ridge": lambda cfg, name: Ridge(**model_params(cfg, name, {"random_state": cfg["seed"]})),
+    "lasso": lambda cfg, name: Lasso(
+        **model_params(cfg, name, {"random_state": cfg["seed"], "alpha": 0.001, "max_iter": 10000})
+    ),
+    "elasticnet": lambda cfg, name: ElasticNet(
+        **model_params(
+            cfg,
+            name,
+            {"random_state": cfg["seed"], "alpha": 0.001, "l1_ratio": 0.5, "max_iter": 10000},
+        )
+    ),
+    "svr": lambda cfg, name: SVR(**model_params(cfg, name)),
+    "linear_svr": lambda cfg, name: LinearSVR(
+        **model_params(cfg, name, {"random_state": cfg["seed"], "max_iter": 10000})
+    ),
+    "mlp": lambda cfg, name: MLPRegressor(
+        **model_params(cfg, name, {"random_state": cfg["seed"], "max_iter": 1000})
+    ),
+}
+
+
 def init_models(cfg: dict[str, Any]) -> list[tuple[str, Any]]:
     models_cfg = cfg["models"]
-    seed = cfg["seed"]
     initialized: list[tuple[str, Any]] = []
 
-    if models_cfg.get("randomforest", {}).get("enabled", False):
-        params = {"random_state": seed}
-        params.update(models_cfg["randomforest"].get("params", {}))
-        initialized.append(("randomforest", RandomForestRegressor(**params)))
-
-    if models_cfg.get("xgb", {}).get("enabled", False):
-        try:
-            import xgboost as xgb
-        except ImportError as exc:
-            raise _missing_optional("xgboost", "regressors") from exc
-
-        params = {"random_state": seed, "verbosity": 0}
-        params.update(models_cfg["xgb"].get("params", {}))
-        initialized.append(("xgb", xgb.XGBRegressor(**params)))
-
-    if models_cfg.get("catboost", {}).get("enabled", False):
-        try:
-            from catboost import CatBoostRegressor
-        except ImportError as exc:
-            raise _missing_optional("catboost", "regressors") from exc
-
-        params = {"random_state": seed, "verbose": 0}
-        params.update(models_cfg["catboost"].get("params", {}))
-        initialized.append(("catboost", CatBoostRegressor(**params)))
+    for model_name, model_cfg in models_cfg.items():
+        if not isinstance(model_cfg, dict) or not model_cfg.get("enabled", False):
+            continue
+        factory = MODEL_FACTORIES.get(model_name)
+        if factory is None:
+            supported = ", ".join(sorted(MODEL_FACTORIES))
+            raise ValueError(f"Unsupported enabled model '{model_name}'. Supported models: {supported}")
+        initialized.append((model_name, factory(cfg, model_name)))
 
     if not initialized:
         raise ValueError("No models are enabled in config['models']")
 
     return initialized
+
+
+def native_feature_importances(model: Any, n_features: int) -> np.ndarray | None:
+    if hasattr(model, "feature_importances_"):
+        values = np.asarray(model.feature_importances_, dtype=float)
+    elif hasattr(model, "coef_"):
+        values = np.asarray(model.coef_, dtype=float)
+        if values.ndim == 0:
+            values = values.reshape(1)
+        if values.ndim > 1:
+            values = np.mean(np.abs(values), axis=0)
+        else:
+            values = np.abs(values)
+    elif hasattr(model, "coefs_") and getattr(model, "coefs_", None):
+        first_layer = np.asarray(model.coefs_[0], dtype=float)
+        values = np.mean(np.abs(first_layer), axis=1)
+    else:
+        return None
+
+    values = np.asarray(values, dtype=float).reshape(-1)
+    if values.size != n_features:
+        raise ValueError(f"importance vector has {values.size} values for {n_features} features")
+    return values
+
+
+def compute_plot_importances(
+    model_name: str,
+    model: Any,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+    cfg: dict[str, Any],
+) -> tuple[pd.Series, pd.Series | None] | None:
+    native_values = None
+    try:
+        native_values = native_feature_importances(model, X_test.shape[1])
+    except Exception as exc:
+        warnings.warn(
+            f"Could not read native importances for {model_display_name(model_name, cfg)}: {exc}. "
+            "Using permutation importances instead.",
+            stacklevel=2,
+        )
+
+    permutation = None
+    try:
+        permutation = permutation_importance(
+            model,
+            X_test,
+            y_test,
+            n_repeats=cfg["permutation_repeats"],
+            random_state=cfg["seed"],
+            n_jobs=2,
+        )
+    except Exception as exc:
+        if native_values is None:
+            warnings.warn(
+                f"Skipping importance plot for {model_display_name(model_name, cfg)}: "
+                f"permutation importances failed: {exc}",
+                stacklevel=2,
+            )
+            return None
+        warnings.warn(
+            f"Permutation uncertainty failed for {model_display_name(model_name, cfg)}: {exc}",
+            stacklevel=2,
+        )
+
+    if native_values is None:
+        importances = pd.Series(np.abs(permutation.importances_mean), index=X_test.columns)
+    else:
+        importances = pd.Series(native_values, index=X_test.columns)
+
+    importances = importances.sort_values(ascending=True)
+    if permutation is None:
+        return importances, None
+
+    yerr = pd.Series(permutation.importances_std, index=X_test.columns).reindex(importances.index)
+    return importances, yerr
 
 
 def plot_importance(
@@ -754,19 +897,10 @@ def plot_importance(
     out_dir: Path,
     cfg: dict[str, Any],
 ) -> Path | None:
-    if not hasattr(model, "feature_importances_"):
+    computed = compute_plot_importances(model_name, model, X_test, y_test, cfg)
+    if computed is None:
         return None
-
-    importances = pd.Series(model.feature_importances_, index=X_test.columns).sort_values(ascending=True)
-    perm = permutation_importance(
-        model,
-        X_test,
-        y_test,
-        n_repeats=cfg["permutation_repeats"],
-        random_state=cfg["seed"],
-        n_jobs=2,
-    )
-    perm_std = pd.Series(perm.importances_std, index=X_test.columns).reindex(importances.index)
+    importances, perm_std = computed
 
     palette = importance_palette()
     colors = [palette[feature_family(name, cfg)] for name in importances.index]
@@ -775,7 +909,8 @@ def plot_importance(
 
     with plt.rc_context(plot_rc_params(cfg)):
         fig, ax = plt.subplots(figsize=tuple(cfg["plot"]["importance_figsize"]))
-        display_importances.plot.barh(yerr=perm_std.to_numpy(), ax=ax, color=colors)
+        yerr = perm_std.to_numpy() if perm_std is not None else None
+        display_importances.plot.barh(yerr=yerr, ax=ax, color=colors)
         ax.set_title(f"{model_display_name(model_name, cfg)}\nFeature Importances", pad=10)
         ax.set_xlabel("Importance")
         fig.tight_layout()
@@ -837,7 +972,45 @@ def _xgboost_shap_values(model: Any, X_test: pd.DataFrame) -> np.ndarray:
     return contributions[:, :-1]
 
 
-def compute_model_shap_values(model_name: str, model: Any, X_test: pd.DataFrame) -> np.ndarray | None:
+def shap_sample_frame(X: pd.DataFrame, max_samples: int | None, seed: int) -> pd.DataFrame:
+    if max_samples is None or max_samples <= 0 or len(X) <= max_samples:
+        return X
+    return X.sample(n=max_samples, random_state=seed).sort_index()
+
+
+def optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    return int(value)
+
+
+def _kernel_shap_values(shap: Any, model: Any, X_test: pd.DataFrame, cfg: dict[str, Any]) -> np.ndarray:
+    plot_cfg = cfg.get("plot", {})
+    background_samples = plot_cfg.get("shap_kernel_background_samples", 32)
+    max_samples = plot_cfg.get("shap_kernel_max_samples", 100)
+    nsamples = plot_cfg.get("shap_kernel_nsamples", "auto")
+
+    background = shap_sample_frame(X_test, optional_int(background_samples), cfg["seed"])
+    explain_data = shap_sample_frame(X_test, optional_int(max_samples), cfg["seed"])
+
+    def predict_fn(values: np.ndarray) -> np.ndarray:
+        frame = pd.DataFrame(values, columns=X_test.columns)
+        return np.asarray(model.predict(frame), dtype=float).reshape(-1)
+
+    explainer = shap.KernelExplainer(predict_fn, background)
+    kwargs = {}
+    if nsamples is not None:
+        kwargs["nsamples"] = nsamples
+    values = explainer.shap_values(explain_data, **kwargs)
+    return _normalize_shap_values(values, explain_data)
+
+
+def compute_model_shap_values(
+    model_name: str,
+    model: Any,
+    X_test: pd.DataFrame,
+    cfg: dict[str, Any],
+) -> np.ndarray | None:
     if model_name == "xgb":
         return _xgboost_shap_values(model, X_test)
 
@@ -852,8 +1025,17 @@ def compute_model_shap_values(model_name: str, model: Any, X_test: pd.DataFrame)
         )
         return None
 
-    explainer = shap.TreeExplainer(model)
-    return _normalize_shap_values(explainer.shap_values(X_test), X_test)
+    try:
+        explainer = shap.TreeExplainer(model)
+        return _normalize_shap_values(explainer.shap_values(X_test), X_test)
+    except Exception as exc:
+        if not cfg.get("plot", {}).get("shap_kernel_fallback", True):
+            raise
+        warnings.warn(
+            f"TreeExplainer failed for {model_name}: {exc}. Falling back to KernelExplainer.",
+            stacklevel=2,
+        )
+        return _kernel_shap_values(shap, model, X_test, cfg)
 
 
 def plot_shap_importance(
@@ -864,7 +1046,7 @@ def plot_shap_importance(
     cfg: dict[str, Any],
 ) -> Path | None:
     try:
-        shap_arr = compute_model_shap_values(model_name, model, X_test)
+        shap_arr = compute_model_shap_values(model_name, model, X_test, cfg)
     except Exception as exc:
         warnings.warn(
             f"Skipping SHAP plot for {model_display_name(model_name, cfg)}: {exc}",
@@ -933,14 +1115,17 @@ def plot_all_importances(
 
     images = [plt.imread(path) for _, path in valid]
     single_w, single_h = tuple(cfg["plot"]["importance_figsize"])
+    max_cols = max(1, int(cfg.get("plot", {}).get("aggregate_max_columns", 3)))
+    n_cols = min(len(images), max_cols)
+    n_rows = math.ceil(len(images) / n_cols)
     with plt.rc_context(plot_rc_params(cfg)):
-        fig, axes = plt.subplots(1, len(images), figsize=(single_w * len(images), single_h))
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(single_w * n_cols, single_h * n_rows))
+        axes_flat = np.asarray(axes).reshape(-1)
 
-        if len(images) == 1:
-            axes = [axes]
-
-        for ax, (_, _), image in zip(axes, valid, images, strict=False):
+        for ax, (_, _), image in zip(axes_flat, valid, images, strict=False):
             ax.imshow(image)
+            ax.axis("off")
+        for ax in axes_flat[len(images):]:
             ax.axis("off")
 
         palette = importance_palette()
@@ -974,14 +1159,17 @@ def plot_all_shap_importances(
 
     images = [plt.imread(path) for _, path in valid]
     single_w, single_h = tuple(cfg.get("plot", {}).get("shap_figsize", cfg["plot"]["importance_figsize"]))
+    max_cols = max(1, int(cfg.get("plot", {}).get("aggregate_max_columns", 3)))
+    n_cols = min(len(images), max_cols)
+    n_rows = math.ceil(len(images) / n_cols)
     with plt.rc_context(plot_rc_params(cfg)):
-        fig, axes = plt.subplots(1, len(images), figsize=(single_w * len(images), single_h))
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(single_w * n_cols, single_h * n_rows))
+        axes_flat = np.asarray(axes).reshape(-1)
 
-        if len(images) == 1:
-            axes = [axes]
-
-        for ax, (_, _), image in zip(axes, valid, images, strict=False):
+        for ax, (_, _), image in zip(axes_flat, valid, images, strict=False):
             ax.imshow(image)
+            ax.axis("off")
+        for ax in axes_flat[len(images):]:
             ax.axis("off")
 
         palette = importance_palette()

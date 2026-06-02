@@ -99,7 +99,16 @@
     "models": {
         "randomforest": {"enabled": true, "params": {}},
         "xgb": {"enabled": true, "params": {}},
-        "catboost": {"enabled": true, "params": {}}
+        "catboost": {"enabled": true, "params": {}},
+        "gradientboosting": {"enabled": false, "params": {}},
+        "lgbm": {"enabled": false, "params": {}},
+        "linear": {"enabled": false, "params": {}},
+        "ridge": {"enabled": false, "params": {}},
+        "lasso": {"enabled": false, "params": {"alpha": 0.001}},
+        "elasticnet": {"enabled": false, "params": {"alpha": 0.001, "l1_ratio": 0.5}},
+        "svr": {"enabled": false, "params": {}},
+        "linear_svr": {"enabled": false, "params": {}},
+        "mlp": {"enabled": false, "params": {}}
     },
 
     "pretty_names": {
@@ -124,6 +133,11 @@
         },
         "importance_figsize": [6, 12],
         "shap_figsize": [8, 12],
+        "shap_kernel_fallback": true,
+        "shap_kernel_background_samples": 32,
+        "shap_kernel_max_samples": 100,
+        "shap_kernel_nsamples": "auto",
+        "aggregate_max_columns": 3,
         "correlation_figsize": [12, 5],
         "scatter_figsize": [8.5, 5.5],
         "scatter_point_size": 100,
