@@ -5,20 +5,20 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "qualisr-lab"
 version = "0.1.0"
-description = "Open-source workbench for reduced-reference quality assessment of super-resolution images."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [
-  { name = "Oleg Ryabinin" },
-  { name = "Evgeney Bogatyrev" },
-  { name = "Dmitriy Vatolin" }
+  { name = "Oleg Ryabinin", email = "oleg.ryabinin@graphics.cs.msu.ru" },
+  { name = "Evgeney Bogatyrev", email = "evgeney.bogatyrev@graphics.cs.msu.ru" },
+  { name = "Khaled Abud", email = "khaled.abud@graphics.cs.msu.ru" },
+  { name = "Dmitriy Vatolin", email = "dmitriy@graphics.cs.msu.ru" }
 ]
+description = "A toolkit for extracting IQA features, training regressors, and analyzing super-resolution image quality against human scores."
 keywords = ["image-quality-assessment", "super-resolution", "reduced-reference", "multimedia"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
