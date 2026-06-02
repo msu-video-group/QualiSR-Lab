@@ -26,6 +26,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Image Processing",
 ]
 dependencies = [
+  "icecream>=2.1",
   "matplotlib>=3.8",
   "numpy>=1.24",
   "pandas>=2.0",
@@ -38,12 +39,14 @@ dependencies = [
 [project.optional-dependencies]
 regressors = [
   "catboost>=1.2",
+  "lightgbm>=4.0",
   "shap>=0.45",
   "xgboost>=2.0",
 ]
 features = [
   "huggingface-hub[cli]>=0.23",
   "pyiqa>=0.1.15",
+  "timm>=1.0",
   "torch>=2.2",
   "torchvision>=0.17",
   "transformers>=4.40",
@@ -68,6 +71,7 @@ qualisr-extract-features = "qualisr_lab.cli:extract_features_main"
 qualisr-apply-pca = "qualisr_lab.cli:apply_pca_main"
 qualisr-compute-stats = "qualisr_lab.cli:compute_stats_main"
 qualisr-run-regressors = "qualisr_lab.cli:run_regressors_main"
+qualisr-run-pipeline = "qualisr_lab.cli:run_pipeline_main"
 
 [tool.setuptools]
 packages = ["qualisr_lab", "scripts"]
