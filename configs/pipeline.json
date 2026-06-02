@@ -146,6 +146,31 @@
                 "feature_profiles": {}
             },
 
+            "analysis": {
+                "outliers": {
+                    "enabled": false,
+                    "top_n": 25,
+                    "feature_z_threshold": 3.0
+                },
+                "feature_metrics": {
+                    "enabled": false,
+                    "features": [],
+                    "target_bins": 5,
+                    "rank_by": "mutual_info",
+                    "top_n": 40
+                },
+                "feature_selection": {
+                    "enabled": false,
+                    "features": [],
+                    "directions": ["forward"],
+                    "model": "ridge",
+                    "model_params": {},
+                    "metric": "srcc",
+                    "max_features": 12,
+                    "min_features": 1
+                }
+            },
+
             "correlation_metrics": {
                 "enabled": true,
                 "items": [

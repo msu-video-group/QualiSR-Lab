@@ -38,7 +38,7 @@ def resolve_regressor_profile_path(cfg: dict[str, Any], out_dir: Path, run_name:
     profile_cfg = cfg.get("profiling", {})
     raw_path = profile_cfg.get("regressor_output")
     if not raw_path:
-        return out_dir / "regressor_profile.csv"
+        return out_dir / "profiling" / "regressor_profile.csv"
 
     return resolve_profile_template_path(str(raw_path), cfg, run_name=run_name)
 
@@ -47,7 +47,7 @@ def resolve_regressor_total_profile_path(cfg: dict[str, Any], out_dir: Path, run
     profile_cfg = cfg.get("profiling", {})
     raw_path = profile_cfg.get("regressor_total_output")
     if not raw_path:
-        return out_dir / "regressor_total_profile.csv"
+        return out_dir / "profiling" / "regressor_total_profile.csv"
 
     return resolve_profile_template_path(str(raw_path), cfg, run_name=run_name)
 
