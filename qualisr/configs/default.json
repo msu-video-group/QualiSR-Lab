@@ -1,0 +1,179 @@
+{
+    "seed": 42,
+    "experiment_name": "baseline",
+    "test_size": 0.2,
+    "scale_features": true,
+    "permutation_repeats": 10,
+    "save_dataset_snapshot": true,
+    "save_mean_correlations": true,
+    "save_best_correlations": false,
+
+    "profiling": {
+        "regressors": false,
+        "feature_profile_files": [],
+        "feature_profiles": {}
+    },
+
+    "analysis": {
+        "outliers": {
+            "enabled": false,
+            "top_n": 25,
+            "feature_z_threshold": 3.0
+        },
+        "feature_metrics": {
+            "enabled": false,
+            "features": [],
+            "target_bins": 5,
+            "rank_by": "mutual_info",
+            "top_n": 40
+        },
+        "feature_selection": {
+            "enabled": false,
+            "features": [],
+            "directions": ["forward"],
+            "model": "ridge",
+            "model_params": {},
+            "metric": "srcc",
+            "max_features": 12,
+            "min_features": 1
+        }
+    },
+
+    "correlation_metrics": {
+        "enabled": true,
+        "items": [
+            {
+                "label": "MUSIQ (NR)",
+                "feature": "nr",
+                "metric": "musiq",
+                "higher_is_better": true
+            },
+            {
+                "label": "LPIPS-VGG+GT (FR)",
+                "feature": "fr",
+                "metric": "lpips-vgg",
+                "reference": "gt",
+                "higher_is_better": false
+            },
+            {
+                "label": "ARNIQA (NR)",
+                "feature": "nr",
+                "metric": "arniqa",
+                "higher_is_better": true
+            }
+        ]
+    },
+
+    "paths": {
+        "raw_scores": "scores/labels.csv",
+        "scores": "scores/fn_scores.csv",
+        "features_root": "features",
+        "plots_root": "plots"
+    },
+
+    "score_preparation": {
+        "enabled": true,
+        "method_column": "method",
+        "case_column": "test_case",
+        "score_column": "score_norm",
+        "method_map": {
+            "pasd": "PASD",
+            "supir": "SUPIR",
+            "realesrgan": "RealESRGAN"
+        },
+        "name_suffix": ".npy.gz"
+    },
+
+    "dataset": {
+        "name_column": "name",
+        "score_column": "scores",
+        "sr_method_column": "sr_method",
+        "sr_filename_column": "sr_filename",
+        "filename_suffix": ".npy.gz",
+        "group_segment_index": 1,
+        "group_remove_suffix": ".npy.gz",
+        "metadata_drop": [
+            "sample_id", "sr_method", "sr_filename", "sr_path", "gt_path", "lr_path", "set_type"
+        ]
+    },
+
+    "features": {
+        "pca_n": 5,
+        "include": ["nr", "fr", "vgg", "resnet"],
+        "include_stats": false,
+        "stats_columns": ["max", "median", "std", "area00"],
+        "fr_refs": ["rlfn"],
+        "exclude_columns": ["qalign"],
+
+        "feature_files": {
+            "nr": "{features_root}/nr.csv",
+            "fr": "{features_root}/fr.csv",
+            "siglip": "{features_root}/siglip.csv",
+            "vgg": "{features_root}/pca/vgg_pca{pca_n}.csv",
+            "resnet": "{features_root}/pca/resnet_pca{pca_n}.csv",
+            "stats": "{features_root}/stats.csv"
+        }
+    },
+
+    "feature_categories": {
+        "nr_metrics": [],
+        "fr_metrics": [],
+        "timm_prefixes": []
+    },
+
+    "models": {
+        "randomforest": {"enabled": true, "params": {}},
+        "xgb": {"enabled": true, "params": {}},
+        "catboost": {"enabled": true, "params": {}},
+        "gradientboosting": {"enabled": false, "params": {}},
+        "lgbm": {"enabled": false, "params": {}},
+        "linear": {"enabled": false, "params": {}},
+        "ridge": {"enabled": false, "params": {}},
+        "lasso": {"enabled": false, "params": {"alpha": 0.001}},
+        "elasticnet": {"enabled": false, "params": {"alpha": 0.001, "l1_ratio": 0.5}},
+        "svr": {"enabled": false, "params": {}},
+        "linear_svr": {"enabled": false, "params": {}},
+        "mlp": {"enabled": false, "params": {}}
+    },
+
+    "pretty_names": {
+        "features": {},
+        "models": {},
+        "metrics": {},
+        "references": {},
+        "families": {}
+    },
+
+    "plot": {
+        "enabled": {
+            "importance": true,
+            "all_importances": true,
+            "shap": true,
+            "all_shap_importances": true,
+            "correlations": true,
+            "correlations_without_metrics": true,
+            "feature_correlations": true,
+            "feature_cross_correlation_matrix": true,
+            "prediction_scatter": true
+        },
+        "importance_figsize": [6, 12],
+        "shap_figsize": [8, 12],
+        "shap_kernel_fallback": true,
+        "shap_kernel_background_samples": 32,
+        "shap_kernel_max_samples": 100,
+        "shap_kernel_nsamples": "auto",
+        "aggregate_max_columns": 3,
+        "correlation_figsize": [12, 5],
+        "scatter_figsize": [8.5, 5.5],
+        "scatter_point_size": 100,
+        "feature_correlation_matrix_figsize": [10, 10],
+        "max_feature_correlation_matrix_features": 300,
+        "max_feature_correlation_matrix_labels": 45,
+        "feature_correlation_matrix_label_font_size": 8,
+        "dpi": 300,
+        "font_size": 16,
+        "bbox_inches": "tight",
+        "pad_inches": 0.1,
+        "save_svg": false
+    }
+}

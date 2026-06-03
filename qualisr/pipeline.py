@@ -8,16 +8,33 @@ import json
 import sys
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
+from importlib import resources
 from pathlib import Path
 from typing import Any
-
 
 SECTION_ORDER = ("references", "features", "pca", "statistics", "regressors")
 
 
-def load_pipeline_config(path: Path) -> dict[str, Any]:
-    with open(path, encoding="utf-8") as handle:
+def load_packaged_pipeline_config() -> dict[str, Any]:
+    with resources.files("qualisr.configs").joinpath("pipeline.json").open(encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def load_pipeline_config(path: Path | None = None) -> dict[str, Any]:
+    if path is None:
+        return load_packaged_pipeline_config()
+    if path.exists():
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle)
+    if path.as_posix() == "configs/pipeline.json":
+        return load_packaged_pipeline_config()
+    raise FileNotFoundError(f"Pipeline config not found: {path}")
+
+
+def config_base_dir(path: Path | None) -> Path:
+    if path is not None and path.exists():
+        return path.parent
+    return Path.cwd()
 
 
 def deep_update(base: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
@@ -141,7 +158,7 @@ def run_references(cfg: Mapping[str, Any]) -> None:
     add_bool(argv, "--overwrite", cfg.get("overwrite"))
     add_bool(argv, "--strict", cfg.get("strict"))
     add_bool(argv, "--no-progress", cfg.get("no_progress"))
-    run_module_main("scripts.make_reference", argv)
+    run_module_main("qualisr.references", argv)
 
 
 def feature_group_items(cfg: Mapping[str, Any]) -> list[tuple[str, Mapping[str, Any]]]:
@@ -191,7 +208,7 @@ def run_feature_group(common: Mapping[str, Any], name: str, group: Mapping[str, 
     add_bool(argv, "--profile-flops", merged.get("profile_flops"))
     add_bool(argv, "--timm-no-pretrained", merged.get("timm_no_pretrained"))
     add_bool(argv, "--strict", merged.get("strict"))
-    run_module_main("scripts.get_image_features", argv)
+    run_module_main("qualisr.features", argv)
 
 
 def run_features(cfg: Mapping[str, Any]) -> None:
@@ -243,7 +260,7 @@ def run_pca(cfg: Mapping[str, Any]) -> None:
         add_value(argv, "--log-level", merged.get("log_level"))
         add_bool(argv, "--keep-original-blocks", merged.get("keep_original_blocks"))
         add_bool(argv, "--disable-auto-split", merged.get("disable_auto_split"))
-        run_module_main("scripts.apply_pca", argv)
+        run_module_main("qualisr.pca", argv)
 
 
 def run_statistics(cfg: Mapping[str, Any]) -> None:
@@ -259,7 +276,7 @@ def run_statistics(cfg: Mapping[str, Any]) -> None:
     add_bool(argv, "--recursive", cfg.get("recursive"))
     add_bool(argv, "--strict", cfg.get("strict"))
     add_bool(argv, "--no-progress", cfg.get("no_progress"))
-    run_module_main("scripts.compute_statistics", argv)
+    run_module_main("qualisr.statistics", argv)
 
 
 def collect_feature_categories(features_cfg: Mapping[str, Any] | None) -> dict[str, list[str]]:
@@ -316,7 +333,7 @@ def run_regressors_section(
     args: argparse.Namespace,
     features_cfg: Mapping[str, Any] | None = None,
 ) -> None:
-    from qualisr_lab.regressors import extract_regressor_config, run_experiment
+    from qualisr.regressors import extract_regressor_config, run_experiment
 
     regressor_cfg = extract_regressor_config({"regressors": dict(cfg)}, base_dir)
     inferred_categories = collect_feature_categories(features_cfg)
@@ -342,7 +359,7 @@ def run_regressors_section(
     print(result["results"].to_string(index=False))
 
 
-def run_pipeline(cfg: dict[str, Any], config_path: Path, args: argparse.Namespace) -> None:
+def run_pipeline(cfg: dict[str, Any], base_dir: Path, args: argparse.Namespace) -> None:
     selected = set(args.only_section or SECTION_ORDER)
     skipped = set(args.skip_section or [])
 
@@ -363,12 +380,16 @@ def run_pipeline(cfg: dict[str, Any], config_path: Path, args: argparse.Namespac
             run_statistics(section_cfg)
         elif section_name == "regressors":
             features_cfg = cfg.get("features", {})
-            run_regressors_section(section_cfg, config_path.parent, args, features_cfg=features_cfg)
+            run_regressors_section(section_cfg, base_dir, args, features_cfg=features_cfg)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the unified QualiSR-Lab pipeline config.")
-    parser.add_argument("--config", default="configs/pipeline.json", help="Unified pipeline JSON config.")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Unified pipeline JSON config. Defaults to packaged qualisr/configs/pipeline.json.",
+    )
     parser.add_argument("--only-section", nargs="+", choices=SECTION_ORDER, default=None)
     parser.add_argument("--skip-section", nargs="+", choices=SECTION_ORDER, default=None)
     parser.add_argument("--experiment-name", default=None, help="Override nested regressor experiment_name.")
@@ -380,9 +401,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
-    config_path = Path(args.config)
+    config_path = Path(args.config) if args.config is not None else None
     cfg = load_pipeline_config(config_path)
-    run_pipeline(cfg, config_path, args)
+    run_pipeline(cfg, config_base_dir(config_path), args)
 
 
 if __name__ == "__main__":

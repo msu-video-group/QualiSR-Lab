@@ -1,0 +1,24 @@
+include LICENSE
+include README.md
+include THIRD_PARTY_NOTICES.md
+include environment.yml
+include logo.png
+include pipeline.png
+include reproduce_pipeline.sh
+recursive-include qualisr/configs *.json
+
+prune .agents
+prune .codex
+prune .git
+prune .ruff_cache
+prune catboost_info
+prune dataset
+prune features
+prune plots
+prune realtime_sr
+prune scores
+prune venv
+include dataset/readme.md
+include features/readme.md
+global-exclude __pycache__/*
+global-exclude *.py[cod]

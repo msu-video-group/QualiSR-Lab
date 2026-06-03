@@ -42,7 +42,7 @@ repository.
 
 ```bash
 python -m pip install -e ".[regressors]"
-qualisr-run-regressors --config configs/default.json
+qualisr-run-regressors
 ```
 
 Or build Docker image:
@@ -107,7 +107,7 @@ qualisr-run-pipeline --config configs/pipeline.json
 You can also use BASH script:
 
 ```bash
-bash scripts/reproduce_pipeline.sh
+bash reproduce_pipeline.sh
 ```
 
 The script writes feature-group CSVs such as `features/fr.csv`, `features/nr.csv`, and `features/vgg.csv`, PCA outputs to `features/pca/`, prepared scores to `scores/`, and plots/results to `plots/`.
@@ -121,6 +121,9 @@ You may either launch the whole pipeline in a single command with your JSON conf
 ### Step 0 (optional): Prepare reference images
 
 Produce [RLFN](https://github.com/bytedance/RLFN) / [SPAN](https://github.com/zononhzy/SPAN) / bicubic images for LR + SR pairs (used to compute FR metrics).
+The bundled `realtime_sr/` directory is a clone-only convenience asset; pip
+installs do not include these scripts/checkpoints, so pass your own paths for
+RLFN/SPAN when running outside the repository.
 
 ```bash
 qualisr-make-reference \

@@ -56,8 +56,11 @@ notebook = [
   "jupyter>=1.0",
 ]
 dev = [
+  "build>=1.2",
+  "check-manifest>=0.49",
   "pytest>=8.0",
   "ruff>=0.6",
+  "twine>=5.0",
 ]
 
 [project.urls]
@@ -65,16 +68,19 @@ Homepage = "https://github.com/sangwyn/QualiSR-Lab"
 Repository = "https://github.com/sangwyn/QualiSR-Lab"
 
 [project.scripts]
-qualisr = "qualisr_lab.cli:main"
-qualisr-make-reference = "qualisr_lab.cli:make_reference_main"
-qualisr-extract-features = "qualisr_lab.cli:extract_features_main"
-qualisr-apply-pca = "qualisr_lab.cli:apply_pca_main"
-qualisr-compute-stats = "qualisr_lab.cli:compute_stats_main"
-qualisr-run-regressors = "qualisr_lab.cli:run_regressors_main"
-qualisr-run-pipeline = "qualisr_lab.cli:run_pipeline_main"
+qualisr = "qualisr.cli:main"
+qualisr-make-reference = "qualisr.cli:make_reference_main"
+qualisr-extract-features = "qualisr.cli:extract_features_main"
+qualisr-apply-pca = "qualisr.cli:apply_pca_main"
+qualisr-compute-stats = "qualisr.cli:compute_stats_main"
+qualisr-run-regressors = "qualisr.cli:run_regressors_main"
+qualisr-run-pipeline = "qualisr.cli:run_pipeline_main"
 
-[tool.setuptools]
-packages = ["qualisr_lab", "scripts"]
+[tool.setuptools.packages.find]
+include = ["qualisr*"]
+
+[tool.setuptools.package-data]
+qualisr = ["configs/*.json"]
 
 [tool.ruff]
 line-length = 110

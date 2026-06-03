@@ -1,8 +1,8 @@
 import argparse
 import logging
 import os
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -18,11 +18,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Apply PCA to high-dimensional feature blocks (e.g. vgg_*, resnet_*) "
-            "in CSV files created by get_image_features.py."
+            "in CSV files created by qualisr-extract-features."
         )
     )
 
-    parser.add_argument("--input", required=True, help="Input CSV from get_image_features.py")
+    parser.add_argument("--input", required=True, help="Input CSV from qualisr-extract-features")
     parser.add_argument(
         "--n-components",
         nargs="+",
@@ -128,8 +128,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def parse_blocks(block_specs: Sequence[str]) -> List[Tuple[str, str]]:
-    blocks: List[Tuple[str, str]] = []
+def parse_blocks(block_specs: Sequence[str]) -> list[tuple[str, str]]:
+    blocks: list[tuple[str, str]] = []
     seen_names = set()
 
     for spec in block_specs:
@@ -169,7 +169,7 @@ def get_fit_mask(df: pd.DataFrame, fit_column: str, fit_value: str) -> np.ndarra
     return mask.to_numpy()
 
 
-def validate_n_components(n_components: Sequence[int]) -> List[int]:
+def validate_n_components(n_components: Sequence[int]) -> list[int]:
     parsed = sorted(set(n_components))
     if not parsed:
         raise ValueError("No n_components provided.")
@@ -181,7 +181,7 @@ def validate_n_components(n_components: Sequence[int]) -> List[int]:
     return parsed
 
 
-def normalize_group_key(value: object) -> Optional[str]:
+def normalize_group_key(value: object) -> str | None:
     if pd.isna(value):
         return None
 
@@ -192,7 +192,7 @@ def normalize_group_key(value: object) -> Optional[str]:
     return raw
 
 
-def fallback_group_key_from_value(value: object) -> Optional[str]:
+def fallback_group_key_from_value(value: object) -> str | None:
     normalized = normalize_group_key(value)
     if normalized is None:
         return None
@@ -230,7 +230,7 @@ def build_group_keys(
     group_column: str,
     group_fallback_column: str,
 ) -> np.ndarray:
-    group_keys: List[Optional[str]] = [None] * len(df)
+    group_keys: list[str | None] = [None] * len(df)
 
     if group_column in df.columns:
         for i, value in enumerate(df[group_column]):
@@ -274,7 +274,7 @@ def make_grouped_split(
     split_seed: int,
     train_label: str,
     test_label: str,
-) -> Tuple[np.ndarray, pd.Series, np.ndarray]:
+) -> tuple[np.ndarray, pd.Series, np.ndarray]:
     if not 0.0 < test_size < 1.0:
         raise ValueError(f"--test-size must be in (0, 1). Got {test_size}.")
 
@@ -325,7 +325,7 @@ def main() -> None:
         raise ValueError("Input CSV is empty.")
 
     fit_mask: np.ndarray
-    split_labels: Optional[pd.Series] = None
+    split_labels: pd.Series | None = None
     if args.fit_column is not None:
         fit_mask = get_fit_mask(df, args.fit_column, args.fit_value)
     elif args.disable_auto_split:
@@ -358,7 +358,7 @@ def main() -> None:
 
     LOGGER.info("Rows: %d (fit rows: %d)", len(df), int(fit_mask.sum()))
 
-    block_columns: Dict[str, List[str]] = {}
+    block_columns: dict[str, list[str]] = {}
     for block_name, prefix in blocks:
         cols = [col for col in df.columns if col.startswith(prefix)]
         if not cols:
@@ -369,7 +369,7 @@ def main() -> None:
         block_columns[block_name] = cols
         LOGGER.info("Block '%s': %d columns (prefix='%s')", block_name, len(cols), prefix)
 
-    transformed_blocks: Dict[str, np.ndarray] = {}
+    transformed_blocks: dict[str, np.ndarray] = {}
 
     for block_name, cols in block_columns.items():
         block_data = df[cols].to_numpy(dtype=np.float32)

@@ -12,6 +12,7 @@ import warnings
 from copy import deepcopy
 from fnmatch import fnmatch
 from functools import reduce
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -25,15 +26,15 @@ import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr, spearmanr
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
+from sklearn.feature_selection import chi2, f_regression, mutual_info_regression
 from sklearn.inspection import permutation_importance
 from sklearn.linear_model import ElasticNet, Lasso, LinearRegression, Ridge
-from sklearn.feature_selection import chi2, f_regression, mutual_info_regression
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.svm import LinearSVR, SVR
+from sklearn.svm import SVR, LinearSVR
 
-from qualisr_lab.profiling import (
+from qualisr.profiling import (
     build_regressor_profile_row,
     build_regressor_total_profile,
     is_regressor_profiling_enabled,
@@ -41,7 +42,6 @@ from qualisr_lab.profiling import (
     resolve_regressor_profile_path,
     resolve_regressor_total_profile_path,
 )
-
 
 PRETTY_FEATURE_NAMES = {
     "catboost": "CatBoost",
@@ -2246,14 +2246,29 @@ def extract_regressor_config(cfg: dict[str, Any], base_dir: Path | None = None) 
     return result
 
 
-def load_config(path: Path) -> dict[str, Any]:
-    with open(path, encoding="utf-8") as handle:
-        return extract_regressor_config(json.load(handle), path.parent)
+def load_packaged_config(name: str) -> dict[str, Any]:
+    with resources.files("qualisr.configs").joinpath(name).open(encoding="utf-8") as handle:
+        return extract_regressor_config(json.load(handle), None)
+
+
+def load_config(path: Path | None = None) -> dict[str, Any]:
+    if path is None:
+        return load_packaged_config("default.json")
+    if path.exists():
+        with open(path, encoding="utf-8") as handle:
+            return extract_regressor_config(json.load(handle), path.parent)
+    if path.as_posix() == "configs/default.json":
+        return load_packaged_config("default.json")
+    raise FileNotFoundError(f"Regressor config not found: {path}")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run configured QualiSR-Lab regressor experiments.")
-    parser.add_argument("--config", default="configs/default.json", help="Path to experiment JSON config.")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to experiment JSON config. Defaults to packaged qualisr/configs/default.json.",
+    )
     parser.add_argument("--experiment-name", default=None, help="Override config experiment_name.")
     parser.add_argument("--plots-root", default=None, help="Override config paths.plots_root.")
     parser.add_argument("--no-plots", action="store_true", help="Skip plot generation.")
@@ -2293,7 +2308,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    cfg = load_config(Path(args.config))
+    cfg = load_config(Path(args.config) if args.config is not None else None)
 
     overrides: dict[str, Any] = {}
     if args.experiment_name is not None:

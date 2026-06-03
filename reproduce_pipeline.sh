@@ -34,7 +34,7 @@ PROFILE=${PROFILE:-0}
 PROFILE_FLOPS=${PROFILE_FLOPS:-0}
 SAVE_SVG=${SAVE_SVG:-0}
 
-QUALISR=("$PYTHON" -m qualisr_lab.cli)
+QUALISR=("$PYTHON" -m qualisr.cli)
 DATASET_BASE="$DATASET_DIR"
 
 run() {
