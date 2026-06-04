@@ -69,6 +69,21 @@ package inside the image.
 
 ## 🛠️ Installation Options
 
+From PyPI after release:
+
+```bash
+python -m pip install "qualisr-lab[regressors]"
+```
+
+When testing a TestPyPI upload, use PyPI as an extra dependency index. TestPyPI
+does not mirror packages such as `matplotlib`.
+
+```bash
+python -m pip install \
+  --index-url https://test.pypi.org/simple/ \
+  --extra-index-url https://pypi.org/simple/ \
+  "qualisr-lab[regressors]"
+```
 
 For the regression pipeline only:
 
@@ -92,6 +107,33 @@ pytest
 The legacy fully pinned environment is kept in `requirements.txt`.
 
 See [dataset/readme.md](dataset/readme.md) for dataset download notes.
+
+---
+
+## 🧩 Python API
+
+The CLI remains the recommended way to run full experiments, but installed
+packages also expose a small stable API:
+
+```python
+from qualisr import load_regressor_config, run_regressor_experiment
+
+cfg = load_regressor_config()
+result = run_regressor_experiment(cfg, make_plots=False)
+print(result["results"])
+```
+
+For the unified pipeline:
+
+```python
+from qualisr import PipelineOptions, load_pipeline_config, run_pipeline
+
+cfg = load_pipeline_config()
+run_pipeline(cfg, options=PipelineOptions(only_section=["regressors"], no_plots=True))
+```
+
+Implementation modules such as `qualisr.regressors`, `qualisr.features`, and
+`qualisr.pipeline` remain importable for advanced use.
 
 ---
 

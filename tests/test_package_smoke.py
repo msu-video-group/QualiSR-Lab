@@ -20,12 +20,20 @@ def run_cli(*args: str, tmp_path) -> subprocess.CompletedProcess[str]:
 
 def test_public_api_imports() -> None:
     import qualisr
-    from qualisr import load_config, run_experiment, run_pipeline
+    from qualisr import (
+        PipelineOptions,
+        load_config,
+        load_pipeline_config,
+        run_pipeline,
+        run_regressor_experiment,
+    )
 
     assert "load_config" in qualisr.__all__
-    assert load_config.__module__ == "qualisr.regressors"
-    assert run_experiment.__module__ == "qualisr.regressors"
-    assert run_pipeline.__module__ == "qualisr.pipeline"
+    assert PipelineOptions.__module__ == "qualisr.pipeline"
+    assert load_config.__module__ == "qualisr.api"
+    assert load_pipeline_config.__module__ == "qualisr.api"
+    assert run_pipeline.__module__ == "qualisr.api"
+    assert run_regressor_experiment.__module__ == "qualisr.api"
 
 
 def test_packaged_configs_are_available() -> None:
@@ -34,8 +42,30 @@ def test_packaged_configs_are_available() -> None:
     assert config_root.joinpath("pipeline.json").is_file()
 
 
+def test_public_api_loads_packaged_configs() -> None:
+    from qualisr import load_pipeline_config, load_regressor_config
+
+    regressor_cfg = load_regressor_config()
+    pipeline_cfg = load_pipeline_config()
+    assert "models" in regressor_cfg
+    assert "regressors" in pipeline_cfg
+
+
 def test_cli_help(tmp_path) -> None:
     result = run_cli("--help", tmp_path=tmp_path)
+    assert "run-regressors" in result.stdout
+
+
+def test_module_dispatcher_help(tmp_path) -> None:
+    env = os.environ.copy()
+    env["MPLCONFIGDIR"] = str(tmp_path / "matplotlib")
+    result = subprocess.run(
+        [sys.executable, "-m", "qualisr", "--help"],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
     assert "run-regressors" in result.stdout
 
 

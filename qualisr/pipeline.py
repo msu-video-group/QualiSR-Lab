@@ -8,11 +8,24 @@ import json
 import sys
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
+from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 from typing import Any
 
 SECTION_ORDER = ("references", "features", "pca", "statistics", "regressors")
+
+
+@dataclass(slots=True)
+class PipelineOptions:
+    """Library-friendly options for running a unified pipeline config."""
+
+    only_section: Sequence[str] | None = None
+    skip_section: Sequence[str] | None = None
+    experiment_name: str | None = None
+    plots_root: str | None = None
+    no_plots: bool = False
+    save_svg: bool = False
 
 
 def load_packaged_pipeline_config() -> dict[str, Any]:
@@ -330,7 +343,7 @@ def _config_list_for_categories(value: Any) -> list[str]:
 def run_regressors_section(
     cfg: Mapping[str, Any],
     base_dir: Path,
-    args: argparse.Namespace,
+    options: PipelineOptions,
     features_cfg: Mapping[str, Any] | None = None,
 ) -> None:
     from qualisr.regressors import extract_regressor_config, run_experiment
@@ -344,24 +357,45 @@ def run_regressors_section(
         )
     overrides: dict[str, Any] = {}
 
-    if args.experiment_name is not None:
-        overrides["experiment_name"] = args.experiment_name
-    if args.plots_root is not None:
-        overrides.setdefault("paths", {})["plots_root"] = args.plots_root
-    if args.save_svg:
+    if options.experiment_name is not None:
+        overrides["experiment_name"] = options.experiment_name
+    if options.plots_root is not None:
+        overrides.setdefault("paths", {})["plots_root"] = options.plots_root
+    if options.save_svg:
         overrides.setdefault("plot", {})["save_svg"] = True
     if overrides:
         regressor_cfg = deep_update(regressor_cfg, overrides)
 
-    make_plots = bool(cfg.get("make_plots", True)) and not args.no_plots
+    make_plots = bool(cfg.get("make_plots", True)) and not options.no_plots
     result = run_experiment(regressor_cfg, make_plots=make_plots)
     print(f"Saved regressor results to {result['output_dir']}")
     print(result["results"].to_string(index=False))
 
 
-def run_pipeline(cfg: dict[str, Any], base_dir: Path, args: argparse.Namespace) -> None:
-    selected = set(args.only_section or SECTION_ORDER)
-    skipped = set(args.skip_section or [])
+def pipeline_options_from_namespace(args: argparse.Namespace) -> PipelineOptions:
+    return PipelineOptions(
+        only_section=args.only_section,
+        skip_section=args.skip_section,
+        experiment_name=args.experiment_name,
+        plots_root=args.plots_root,
+        no_plots=args.no_plots,
+        save_svg=args.save_svg,
+    )
+
+
+def run_pipeline(
+    cfg: dict[str, Any],
+    base_dir: Path | str | None = None,
+    options: PipelineOptions | argparse.Namespace | None = None,
+) -> None:
+    if options is None:
+        options = PipelineOptions()
+    elif isinstance(options, argparse.Namespace):
+        options = pipeline_options_from_namespace(options)
+
+    base_path = Path.cwd() if base_dir is None else Path(base_dir)
+    selected = set(options.only_section or SECTION_ORDER)
+    skipped = set(options.skip_section or [])
 
     for section_name in SECTION_ORDER:
         if section_name not in selected or section_name in skipped:
@@ -380,7 +414,7 @@ def run_pipeline(cfg: dict[str, Any], base_dir: Path, args: argparse.Namespace) 
             run_statistics(section_cfg)
         elif section_name == "regressors":
             features_cfg = cfg.get("features", {})
-            run_regressors_section(section_cfg, base_dir, args, features_cfg=features_cfg)
+            run_regressors_section(section_cfg, base_path, options, features_cfg=features_cfg)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -403,7 +437,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
     config_path = Path(args.config) if args.config is not None else None
     cfg = load_pipeline_config(config_path)
-    run_pipeline(cfg, config_base_dir(config_path), args)
+    run_pipeline(cfg, config_base_dir(config_path), pipeline_options_from_namespace(args))
 
 
 if __name__ == "__main__":

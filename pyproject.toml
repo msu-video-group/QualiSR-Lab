@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qualisr-lab"
-version = "0.1.0"
+version = "0.1.2"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
@@ -26,7 +26,6 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Image Processing",
 ]
 dependencies = [
-  "icecream>=2.1",
   "matplotlib>=3.8",
   "numpy>=1.24",
   "pandas>=2.0",
