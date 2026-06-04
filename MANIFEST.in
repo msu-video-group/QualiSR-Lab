@@ -6,6 +6,7 @@ include logo.png
 include pipeline.png
 include reproduce_pipeline.sh
 recursive-include qualisr/configs *.json
+recursive-include qualisr/sample_data *.csv
 
 prune .agents
 prune .codex

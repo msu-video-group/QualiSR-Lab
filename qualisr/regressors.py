@@ -2248,7 +2248,22 @@ def extract_regressor_config(cfg: dict[str, Any], base_dir: Path | None = None) 
 
 def load_packaged_config(name: str) -> dict[str, Any]:
     with resources.files("qualisr.configs").joinpath(name).open(encoding="utf-8") as handle:
-        return extract_regressor_config(json.load(handle), None)
+        cfg = extract_regressor_config(json.load(handle), None)
+
+    if name == "default.json":
+        sample_root = resources.files("qualisr.sample_data")
+        cfg = deep_update(
+            cfg,
+            {
+                "paths": {
+                    "raw_scores": str(sample_root.joinpath("scores", "labels.csv")),
+                    "scores": str(sample_root.joinpath("scores", "fn_scores.csv")),
+                    "features_root": str(sample_root.joinpath("features")),
+                },
+                "score_preparation": {"enabled": False},
+            },
+        )
+    return cfg
 
 
 def load_config(path: Path | None = None) -> dict[str, Any]:

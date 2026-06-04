@@ -35,14 +35,22 @@ The sections below describe the required data format and the workflow.
 ![Pipeline overview](pipeline.png)
 ---
 
-## 🐌 Quickstart With Precomputed Features
+## 🐌 Quickstart With Bundled Sample Data
 
-The fastest smoke test uses the precomputed CSV files already tracked in this
-repository.
+The fastest smoke test uses the small score/feature CSV sample bundled inside
+the Python package, so it works after pip installation without downloading the
+full dataset.
 
 ```bash
 python -m pip install -e ".[regressors]"
 qualisr-run-regressors
+```
+
+From a cloned repository, you can also run against the editable root
+`configs/`, `scores/`, and `features/` files explicitly:
+
+```bash
+qualisr-run-regressors --config configs/default.json
 ```
 
 Or build Docker image:

@@ -79,7 +79,12 @@ qualisr-run-pipeline = "qualisr.cli:run_pipeline_main"
 include = ["qualisr*"]
 
 [tool.setuptools.package-data]
-qualisr = ["configs/*.json"]
+qualisr = [
+  "configs/*.json",
+  "sample_data/features/*.csv",
+  "sample_data/features/pca/*.csv",
+  "sample_data/scores/*.csv",
+]
 
 [tool.ruff]
 line-length = 110
