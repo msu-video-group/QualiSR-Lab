@@ -245,50 +245,44 @@ def relativize_path_columns(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def prepare_scores_file(cfg: dict[str, Any]) -> pd.DataFrame:
-    prep_cfg = cfg["score_preparation"]
-    raw_scores = pd.read_csv(cfg["paths"]["raw_scores"])
+def sample_name_from_image_path(value: object, cfg: dict[str, Any]) -> str:
+    if pd.isna(value):
+        raise ValueError("Labels contain an empty image path")
 
-    method_col = prep_cfg["method_column"]
-    case_col = prep_cfg["case_column"]
-    score_col = prep_cfg["score_column"]
+    raw = str(value).strip().replace("\\", "/")
+    if not raw:
+        raise ValueError("Labels contain an empty image path")
 
-    method_map = {str(k).lower(): v for k, v in prep_cfg["method_map"].items()}
-    mapped_methods = raw_scores[method_col].astype(str).str.lower().map(method_map)
+    parts = [part for part in raw.split("/") if part]
+    if "sr" in [part.lower() for part in parts]:
+        sr_index = next(index for index, part in enumerate(parts) if part.lower() == "sr")
+        parts = parts[sr_index + 1 :]
 
-    if mapped_methods.isna().any():
-        missing = sorted(raw_scores.loc[mapped_methods.isna(), method_col].astype(str).unique().tolist())
-        raise ValueError(f"Missing method_map entries for: {missing}")
+    if len(parts) < 2:
+        raise ValueError(f"Could not derive sample name from image path: {value!r}")
 
-    suffix = prep_cfg["name_suffix"]
-    names = mapped_methods.astype(str) + "/" + raw_scores[case_col].astype(str) + suffix
-    prepared = pd.DataFrame(
-        {
-            "name": names,
-            cfg["dataset"]["score_column"]: raw_scores[score_col],
-        }
-    )
-
-    score_path = Path(cfg["paths"]["scores"])
-    ensure_dir(score_path.parent)
-    prepared.to_csv(score_path, index=False)
-    return prepared
+    method = parts[-2]
+    stem = Path(parts[-1]).stem
+    return f"{method}/{stem}{cfg['dataset']['filename_suffix']}"
 
 
 def load_scores(cfg: dict[str, Any]) -> pd.DataFrame:
-    if cfg["score_preparation"]["enabled"]:
-        scores = prepare_scores_file(cfg)
-    else:
-        scores = pd.read_csv(cfg["paths"]["scores"])
+    labels_path = cfg["paths"].get("labels")
+    if labels_path is None:
+        raise KeyError("Config must define paths.labels")
+    scores = pd.read_csv(labels_path)
 
     name_col = cfg["dataset"]["name_column"]
     score_col = cfg["dataset"]["score_column"]
 
     if name_col not in scores.columns:
-        raise ValueError(f"Scores file must contain '{name_col}' column")
+        image_col = cfg["dataset"].get("image_column", "image")
+        if image_col not in scores.columns:
+            raise ValueError(f"Labels file must contain either '{name_col}' or '{image_col}' column")
+        scores[name_col] = scores[image_col].map(lambda value: sample_name_from_image_path(value, cfg))
 
     if score_col not in scores.columns:
-        fallback = [c for c in ["score", "scores", "mos", "mos_norm"] if c in scores.columns]
+        fallback = [c for c in ["score", "scores", "mos", "mos_norm", "score_norm"] if c in scores.columns]
         if not fallback:
             raise ValueError(
                 f"Scores file must contain '{score_col}' column. Available: {scores.columns.tolist()}"
@@ -2216,7 +2210,6 @@ def extract_regressor_config(cfg: dict[str, Any], base_dir: Path | None = None) 
         "scale_features",
         "permutation_repeats",
         "paths",
-        "score_preparation",
         "dataset",
         "features",
         "models",
@@ -2256,11 +2249,9 @@ def load_packaged_config(name: str) -> dict[str, Any]:
             cfg,
             {
                 "paths": {
-                    "raw_scores": str(sample_root.joinpath("scores", "labels.csv")),
-                    "scores": str(sample_root.joinpath("scores", "fn_scores.csv")),
+                    "labels": str(sample_root.joinpath("scores", "labels.csv")),
                     "features_root": str(sample_root.joinpath("features")),
                 },
-                "score_preparation": {"enabled": False},
             },
         )
     return cfg

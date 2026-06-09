@@ -83,16 +83,6 @@ From PyPI after release:
 python -m pip install "qualisr-lab[regressors]"
 ```
 
-When testing a TestPyPI upload, use PyPI as an extra dependency index. TestPyPI
-does not mirror packages such as `matplotlib`.
-
-```bash
-python -m pip install \
-  --index-url https://test.pypi.org/simple/ \
-  --extra-index-url https://pypi.org/simple/ \
-  "qualisr-lab[regressors]"
-```
-
 For the regression pipeline only:
 
 ```bash
@@ -103,13 +93,6 @@ For full feature extraction on CPU:
 
 ```bash
 python -m pip install -e ".[features,regressors]"
-```
-
-For development:
-
-```bash
-python -m pip install -e ".[dev,regressors]"
-pytest
 ```
 
 The legacy fully pinned environment is kept in `requirements.txt`.
@@ -160,7 +143,7 @@ You can also use BASH script:
 bash reproduce_pipeline.sh
 ```
 
-The script writes feature-group CSVs such as `features/fr.csv`, `features/nr.csv`, and `features/vgg.csv`, PCA outputs to `features/pca/`, prepared scores to `scores/`, and plots/results to `plots/`.
+The script writes feature-group CSVs such as `features/fr.csv`, `features/nr.csv`, and `features/vgg.csv`, PCA outputs to `features/pca/`, and plots/results to `plots/`.
 
 ---
 

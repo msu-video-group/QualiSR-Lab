@@ -191,7 +191,6 @@ dataset/hr
 dataset/lr
 dataset/ref
 dataset/sr
-dataset/labels.csv
 
 configs/test*
 *.egg-info/

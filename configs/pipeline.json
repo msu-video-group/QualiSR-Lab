@@ -7,7 +7,11 @@
             "SUPIR": "dataset/sr/SUPIR",
             "RealESRGAN": "dataset/sr/RealESRGAN"
         },
-        "refs": ["bicubic", "span", "rlfn"],
+        "refs": [
+            "bicubic",
+            "span",
+            "rlfn"
+        ],
         "out_root": "dataset/ref/",
         "ref_dirs": {},
         "output_ext": ".png",
@@ -15,7 +19,6 @@
         "overwrite": false,
         "strict": false
     },
-
     "features": {
         "enabled": true,
         "common": {
@@ -35,37 +38,60 @@
             "strict": false,
             "profile": false,
             "profile_flops": false,
-            "fr_metrics": ["psnr", "ssim", "lpips-vgg", "stlpips-vgg", "pieapp", "ahiq"],
-            "nr_metrics": ["musiq", "arniqa", "qalign", "unique", "paq2piq"]
+            "fr_metrics": [
+                "psnr",
+                "ssim",
+                "lpips-vgg",
+                "stlpips-vgg",
+                "pieapp",
+                "ahiq"
+            ],
+            "nr_metrics": [
+                "musiq",
+                "arniqa",
+                "qalign",
+                "unique",
+                "paq2piq"
+            ]
         },
         "groups": {
             "nr": {
                 "enabled": true,
-                "features": ["nr"],
+                "features": [
+                    "nr"
+                ],
                 "output": "features/nr.csv",
                 "profile_output": "features/profiling/nr_profile.csv"
             },
             "fr": {
                 "enabled": true,
-                "features": ["fr"],
+                "features": [
+                    "fr"
+                ],
                 "output": "features/fr.csv",
                 "profile_output": "features/profiling/fr_profile.csv"
             },
             "vgg": {
                 "enabled": true,
-                "features": ["vgg"],
+                "features": [
+                    "vgg"
+                ],
                 "output": "features/vgg.csv",
                 "profile_output": "features/profiling/vgg_profile.csv"
             },
             "resnet": {
                 "enabled": true,
-                "features": ["resnet"],
+                "features": [
+                    "resnet"
+                ],
                 "output": "features/resnet.csv",
                 "profile_output": "features/profiling/resnet_profile.csv"
             },
             "timm": {
                 "enabled": false,
-                "features": ["timm"],
+                "features": [
+                    "timm"
+                ],
                 "timm_encoders": {
                     "convnext_tiny": "convnext_tiny",
                     "vit_base_patch16_224": "vit_base_patch16_224"
@@ -75,23 +101,29 @@
             },
             "siglip": {
                 "enabled": true,
-                "features": ["siglip"],
+                "features": [
+                    "siglip"
+                ],
                 "output": "features/siglip.csv",
                 "profile_output": "features/profiling/siglip_profile.csv"
             },
             "noise": {
                 "enabled": true,
-                "features": ["gaussian", "uniform"],
+                "features": [
+                    "gaussian",
+                    "uniform"
+                ],
                 "output": "features/noise.csv",
                 "profile_output": "features/profiling/noise_profile.csv"
             }
         }
     },
-
     "pca": {
         "enabled": true,
         "common": {
-            "n_components": [5],
+            "n_components": [
+                5
+            ],
             "output_dir": "features/pca",
             "disable_auto_split": false,
             "split_seed": 42,
@@ -101,18 +133,21 @@
             {
                 "enabled": true,
                 "input": "features/vgg.csv",
-                "blocks": ["vgg=vgg_"],
+                "blocks": [
+                    "vgg=vgg_"
+                ],
                 "output_template": "vgg_pca{n}.csv"
             },
             {
                 "enabled": true,
                 "input": "features/resnet.csv",
-                "blocks": ["resnet=resnet_"],
+                "blocks": [
+                    "resnet=resnet_"
+                ],
                 "output_template": "resnet_pca{n}.csv"
             }
         ]
     },
-
     "statistics": {
         "enabled": true,
         "heatmap_dirs": {
@@ -123,10 +158,16 @@
         "output": "features/stats.csv",
         "profile": false,
         "profile_output": "features/profiling/stats_profile.csv",
-        "percentiles": [5, 95],
-        "area_thresholds": [0, 0.05, 0.75]
+        "percentiles": [
+            5,
+            95
+        ],
+        "area_thresholds": [
+            0,
+            0.05,
+            0.75
+        ]
     },
-
     "regressors": {
         "enabled": true,
         "make_plots": true,
@@ -139,13 +180,11 @@
             "save_dataset_snapshot": true,
             "save_mean_correlations": true,
             "save_best_correlations": false,
-
             "profiling": {
                 "regressors": false,
                 "feature_profile_files": [],
                 "feature_profiles": {}
             },
-
             "analysis": {
                 "outliers": {
                     "enabled": false,
@@ -162,7 +201,9 @@
                 "feature_selection": {
                     "enabled": false,
                     "features": [],
-                    "directions": ["forward"],
+                    "directions": [
+                        "forward"
+                    ],
                     "model": "ridge",
                     "model_params": {},
                     "metric": "srcc",
@@ -170,7 +211,6 @@
                     "min_features": 1
                 }
             },
-
             "correlation_metrics": {
                 "enabled": true,
                 "items": [
@@ -195,48 +235,51 @@
                     }
                 ]
             },
-
             "paths": {
-                "raw_scores": "scores/labels.csv",
-                "scores": "scores/fn_scores.csv",
                 "features_root": "features",
-                "plots_root": "plots"
+                "plots_root": "plots",
+                "labels": "dataset/labels.csv"
             },
-
-            "score_preparation": {
-                "enabled": true,
-                "method_column": "method",
-                "case_column": "test_case",
-                "score_column": "score",
-                "method_map": {
-                    "pasd": "PASD",
-                    "supir": "SUPIR",
-                    "realesrgan": "RealESRGAN"
-                },
-                "name_suffix": ".npy.gz"
-            },
-
             "dataset": {
                 "name_column": "name",
-                "score_column": "scores",
+                "score_column": "score",
                 "sr_method_column": "sr_method",
                 "sr_filename_column": "sr_filename",
                 "filename_suffix": ".npy.gz",
                 "group_segment_index": 1,
                 "group_remove_suffix": ".npy.gz",
                 "metadata_drop": [
-                    "sample_id", "sr_method", "sr_filename", "sr_path", "gt_path", "lr_path", "set_type"
-                ]
+                    "sample_id",
+                    "sr_method",
+                    "sr_filename",
+                    "sr_path",
+                    "gt_path",
+                    "lr_path",
+                    "set_type"
+                ],
+                "image_column": "image"
             },
-
             "features": {
                 "pca_n": 5,
-                "include": ["nr", "fr", "vgg", "resnet"],
+                "include": [
+                    "nr",
+                    "fr",
+                    "vgg",
+                    "resnet"
+                ],
                 "include_stats": false,
-                "stats_columns": ["max", "median", "std", "area00"],
-                "fr_refs": ["rlfn"],
-                "exclude_columns": ["qalign"],
-
+                "stats_columns": [
+                    "max",
+                    "median",
+                    "std",
+                    "area00"
+                ],
+                "fr_refs": [
+                    "rlfn"
+                ],
+                "exclude_columns": [
+                    "qalign"
+                ],
                 "feature_files": {
                     "nr": "{features_root}/nr.csv",
                     "fr": "{features_root}/fr.csv",
@@ -246,22 +289,61 @@
                     "stats": "{features_root}/stats.csv"
                 }
             },
-
             "models": {
-                "randomforest": {"enabled": true, "params": {}},
-                "xgb": {"enabled": true, "params": {}},
-                "catboost": {"enabled": true, "params": {}},
-                "gradientboosting": {"enabled": false, "params": {}},
-                "lgbm": {"enabled": false, "params": {}},
-                "linear": {"enabled": false, "params": {}},
-                "ridge": {"enabled": false, "params": {}},
-                "lasso": {"enabled": false, "params": {"alpha": 0.001}},
-                "elasticnet": {"enabled": false, "params": {"alpha": 0.001, "l1_ratio": 0.5}},
-                "svr": {"enabled": false, "params": {}},
-                "linear_svr": {"enabled": false, "params": {}},
-                "mlp": {"enabled": false, "params": {}}
+                "randomforest": {
+                    "enabled": true,
+                    "params": {}
+                },
+                "xgb": {
+                    "enabled": true,
+                    "params": {}
+                },
+                "catboost": {
+                    "enabled": true,
+                    "params": {}
+                },
+                "gradientboosting": {
+                    "enabled": false,
+                    "params": {}
+                },
+                "lgbm": {
+                    "enabled": false,
+                    "params": {}
+                },
+                "linear": {
+                    "enabled": false,
+                    "params": {}
+                },
+                "ridge": {
+                    "enabled": false,
+                    "params": {}
+                },
+                "lasso": {
+                    "enabled": false,
+                    "params": {
+                        "alpha": 0.001
+                    }
+                },
+                "elasticnet": {
+                    "enabled": false,
+                    "params": {
+                        "alpha": 0.001,
+                        "l1_ratio": 0.5
+                    }
+                },
+                "svr": {
+                    "enabled": false,
+                    "params": {}
+                },
+                "linear_svr": {
+                    "enabled": false,
+                    "params": {}
+                },
+                "mlp": {
+                    "enabled": false,
+                    "params": {}
+                }
             },
-
             "pretty_names": {
                 "features": {},
                 "models": {},
@@ -269,7 +351,6 @@
                 "references": {},
                 "families": {}
             },
-
             "plot": {
                 "enabled": {
                     "importance": true,
@@ -282,17 +363,32 @@
                     "feature_cross_correlation_matrix": true,
                     "prediction_scatter": true
                 },
-                "importance_figsize": [6, 12],
-                "shap_figsize": [8, 12],
+                "importance_figsize": [
+                    6,
+                    12
+                ],
+                "shap_figsize": [
+                    8,
+                    12
+                ],
                 "shap_kernel_fallback": true,
                 "shap_kernel_background_samples": 32,
                 "shap_kernel_max_samples": 100,
                 "shap_kernel_nsamples": "auto",
                 "aggregate_max_columns": 3,
-                "correlation_figsize": [12, 5],
-                "scatter_figsize": [8.5, 5.5],
+                "correlation_figsize": [
+                    12,
+                    5
+                ],
+                "scatter_figsize": [
+                    8.5,
+                    5.5
+                ],
                 "scatter_point_size": 100,
-                "feature_correlation_matrix_figsize": [10, 10],
+                "feature_correlation_matrix_figsize": [
+                    10,
+                    10
+                ],
                 "max_feature_correlation_matrix_features": 300,
                 "max_feature_correlation_matrix_labels": 45,
                 "feature_correlation_matrix_label_font_size": 8,
