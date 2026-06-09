@@ -77,12 +77,6 @@ package inside the image.
 
 ## 🛠️ Installation Options
 
-From PyPI after release:
-
-```bash
-python -m pip install "qualisr-lab[regressors]"
-```
-
 For the regression pipeline only:
 
 ```bash
@@ -93,6 +87,12 @@ For full feature extraction on CPU:
 
 ```bash
 python -m pip install -e ".[features,regressors]"
+```
+
+Also available on PyPI:
+
+```bash
+python -m pip install "qualisr-lab[features,regressors]"
 ```
 
 The legacy fully pinned environment is kept in `requirements.txt`.

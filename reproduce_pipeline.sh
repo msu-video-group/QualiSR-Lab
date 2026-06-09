@@ -21,6 +21,7 @@ DATASET_DIR=${DATASET_DIR:-dataset}
 FEATURES_DIR=${FEATURES_DIR:-features}
 PLOTS_DIR=${PLOTS_DIR:-plots}
 CONFIG=${CONFIG:-configs/default.json}
+RUNTIME_CONFIG=${RUNTIME_CONFIG:-}
 DEVICE=${DEVICE:-auto}
 
 SR_METHODS=${SR_METHODS:-PASD SUPIR RealESRGAN}
@@ -36,6 +37,8 @@ SAVE_SVG=${SAVE_SVG:-0}
 
 QUALISR=("$PYTHON" -m qualisr.cli)
 DATASET_BASE="$DATASET_DIR"
+LABELS_CSV=""
+REGRESSOR_CONFIG=""
 
 run() {
   printf '\n+'
@@ -135,18 +138,6 @@ download_dataset() {
   esac
 }
 
-sync_labels() {
-  mkdir -p scores
-  if [[ -f "$DATASET_BASE/labels.csv" ]]; then
-    run cp "$DATASET_BASE/labels.csv" scores/labels.csv
-  elif [[ -f scores/labels.csv ]]; then
-    echo "Using existing scores/labels.csv."
-  else
-    echo "Missing labels CSV. Expected '$DATASET_BASE/labels.csv' or scores/labels.csv." >&2
-    exit 1
-  fi
-}
-
 build_dataset_args() {
   read -r -a METHOD_ARRAY <<< "$SR_METHODS"
   read -r -a REF_ARRAY <<< "$REF_METHODS"
@@ -162,6 +153,102 @@ build_dataset_args() {
   for ref in "${REF_ARRAY[@]}"; do
     REF_ARGS+=("${ref}=${DATASET_BASE}/ref/${ref}")
   done
+}
+
+prepare_labels() {
+  local labels_source=""
+  if [[ -f "$DATASET_BASE/labels.csv" ]]; then
+    labels_source="$DATASET_BASE/labels.csv"
+  elif [[ -f "$DATASET_DIR/labels.csv" ]]; then
+    labels_source="$DATASET_DIR/labels.csv"
+  elif [[ -f scores/labels.csv ]]; then
+    labels_source="scores/labels.csv"
+  else
+    echo "Missing labels CSV. Expected '$DATASET_BASE/labels.csv' or scores/labels.csv." >&2
+    exit 1
+  fi
+
+  mkdir -p scores
+  LABELS_CSV="scores/labels.csv"
+  if [[ "$labels_source" != "$LABELS_CSV" ]]; then
+    run cp "$labels_source" "$LABELS_CSV"
+  fi
+
+  run "$PYTHON" - "$LABELS_CSV" "$DATASET_BASE" <<'PY'
+from pathlib import Path
+import sys
+
+import pandas as pd
+
+labels_path = Path(sys.argv[1])
+dataset_base = Path(sys.argv[2])
+df = pd.read_csv(labels_path)
+
+if "image" not in df.columns:
+    df["image"] = ""
+
+method_map = {
+    "pasd": "PASD",
+    "supir": "SUPIR",
+    "realesrgan": "RealESRGAN",
+}
+
+def fill_image(row):
+    current = row.get("image")
+    if isinstance(current, str) and current.strip():
+        return current
+    method = method_map.get(str(row["method"]).lower(), str(row["method"]))
+    test_case = str(row["test_case"])
+    for ext in (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"):
+        candidate = dataset_base / "sr" / method / f"{test_case}{ext}"
+        if candidate.exists():
+            return candidate.relative_to(dataset_base).as_posix()
+    return f"sr/{method}/{test_case}.png"
+
+df["image"] = df.apply(fill_image, axis=1)
+df.to_csv(labels_path, index=False)
+PY
+}
+
+write_runtime_regressor_config() {
+  mkdir -p "$PLOTS_DIR"
+  if [[ -n "$RUNTIME_CONFIG" ]]; then
+    REGRESSOR_CONFIG="$RUNTIME_CONFIG"
+  else
+    REGRESSOR_CONFIG="$PLOTS_DIR/reproduce_regressors_config.json"
+  fi
+
+  run "$PYTHON" - "$CONFIG" "$REGRESSOR_CONFIG" "$LABELS_CSV" "$FEATURES_DIR" "$PLOTS_DIR" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+src = Path(sys.argv[1])
+dst = Path(sys.argv[2])
+labels = sys.argv[3]
+features_root = sys.argv[4]
+plots_root = sys.argv[5]
+
+cfg = json.loads(src.read_text())
+reg_cfg = cfg.get("regressors", {}).get("config") if isinstance(cfg.get("regressors"), dict) else cfg
+if not isinstance(reg_cfg, dict):
+    raise SystemExit(f"Could not find regressor config in {src}")
+
+paths = reg_cfg.setdefault("paths", {})
+paths.pop("raw_scores", None)
+paths.pop("scores", None)
+paths["labels"] = labels
+paths["features_root"] = features_root
+paths["plots_root"] = plots_root
+
+reg_cfg.pop("score_preparation", None)
+dataset = reg_cfg.setdefault("dataset", {})
+dataset.setdefault("image_column", "image")
+dataset["score_column"] = "score"
+
+dst.parent.mkdir(parents=True, exist_ok=True)
+dst.write_text(json.dumps(reg_cfg, indent=2) + "\n")
+PY
 }
 
 maybe_install_deps() {
@@ -257,8 +344,9 @@ compute_stats() {
 
 run_regressors() {
   mkdir -p "$PLOTS_DIR"
+  write_runtime_regressor_config
 
-  local -a REGRESSOR_ARGS=(--config "$CONFIG" --plots-root "$PLOTS_DIR")
+  local -a REGRESSOR_ARGS=(--config "$REGRESSOR_CONFIG" --plots-root "$PLOTS_DIR")
   if [[ "$SAVE_SVG" == "1" ]]; then
     REGRESSOR_ARGS+=(--save-svg)
   fi
@@ -280,8 +368,8 @@ main() {
   maybe_install_deps
   download_dataset
   resolve_dataset_base
-  sync_labels
   build_dataset_args
+  prepare_labels
   maybe_make_references
   extract_features
   apply_pca
