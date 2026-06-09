@@ -12,6 +12,7 @@ import warnings
 from copy import deepcopy
 from fnmatch import fnmatch
 from functools import reduce
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -25,15 +26,15 @@ import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr, spearmanr
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
+from sklearn.feature_selection import chi2, f_regression, mutual_info_regression
 from sklearn.inspection import permutation_importance
 from sklearn.linear_model import ElasticNet, Lasso, LinearRegression, Ridge
-from sklearn.feature_selection import chi2, f_regression, mutual_info_regression
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.svm import LinearSVR, SVR
+from sklearn.svm import SVR, LinearSVR
 
-from qualisr_lab.profiling import (
+from qualisr.profiling import (
     build_regressor_profile_row,
     build_regressor_total_profile,
     is_regressor_profiling_enabled,
@@ -41,7 +42,6 @@ from qualisr_lab.profiling import (
     resolve_regressor_profile_path,
     resolve_regressor_total_profile_path,
 )
-
 
 PRETTY_FEATURE_NAMES = {
     "catboost": "CatBoost",
@@ -245,50 +245,44 @@ def relativize_path_columns(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def prepare_scores_file(cfg: dict[str, Any]) -> pd.DataFrame:
-    prep_cfg = cfg["score_preparation"]
-    raw_scores = pd.read_csv(cfg["paths"]["raw_scores"])
+def sample_name_from_image_path(value: object, cfg: dict[str, Any]) -> str:
+    if pd.isna(value):
+        raise ValueError("Labels contain an empty image path")
 
-    method_col = prep_cfg["method_column"]
-    case_col = prep_cfg["case_column"]
-    score_col = prep_cfg["score_column"]
+    raw = str(value).strip().replace("\\", "/")
+    if not raw:
+        raise ValueError("Labels contain an empty image path")
 
-    method_map = {str(k).lower(): v for k, v in prep_cfg["method_map"].items()}
-    mapped_methods = raw_scores[method_col].astype(str).str.lower().map(method_map)
+    parts = [part for part in raw.split("/") if part]
+    if "sr" in [part.lower() for part in parts]:
+        sr_index = next(index for index, part in enumerate(parts) if part.lower() == "sr")
+        parts = parts[sr_index + 1 :]
 
-    if mapped_methods.isna().any():
-        missing = sorted(raw_scores.loc[mapped_methods.isna(), method_col].astype(str).unique().tolist())
-        raise ValueError(f"Missing method_map entries for: {missing}")
+    if len(parts) < 2:
+        raise ValueError(f"Could not derive sample name from image path: {value!r}")
 
-    suffix = prep_cfg["name_suffix"]
-    names = mapped_methods.astype(str) + "/" + raw_scores[case_col].astype(str) + suffix
-    prepared = pd.DataFrame(
-        {
-            "name": names,
-            cfg["dataset"]["score_column"]: raw_scores[score_col],
-        }
-    )
-
-    score_path = Path(cfg["paths"]["scores"])
-    ensure_dir(score_path.parent)
-    prepared.to_csv(score_path, index=False)
-    return prepared
+    method = parts[-2]
+    stem = Path(parts[-1]).stem
+    return f"{method}/{stem}{cfg['dataset']['filename_suffix']}"
 
 
 def load_scores(cfg: dict[str, Any]) -> pd.DataFrame:
-    if cfg["score_preparation"]["enabled"]:
-        scores = prepare_scores_file(cfg)
-    else:
-        scores = pd.read_csv(cfg["paths"]["scores"])
+    labels_path = cfg["paths"].get("labels")
+    if labels_path is None:
+        raise KeyError("Config must define paths.labels")
+    scores = pd.read_csv(labels_path)
 
     name_col = cfg["dataset"]["name_column"]
     score_col = cfg["dataset"]["score_column"]
 
     if name_col not in scores.columns:
-        raise ValueError(f"Scores file must contain '{name_col}' column")
+        image_col = cfg["dataset"].get("image_column", "image")
+        if image_col not in scores.columns:
+            raise ValueError(f"Labels file must contain either '{name_col}' or '{image_col}' column")
+        scores[name_col] = scores[image_col].map(lambda value: sample_name_from_image_path(value, cfg))
 
     if score_col not in scores.columns:
-        fallback = [c for c in ["score", "scores", "mos", "mos_norm"] if c in scores.columns]
+        fallback = [c for c in ["score", "scores", "mos", "mos_norm", "score_norm"] if c in scores.columns]
         if not fallback:
             raise ValueError(
                 f"Scores file must contain '{score_col}' column. Available: {scores.columns.tolist()}"
@@ -2216,7 +2210,6 @@ def extract_regressor_config(cfg: dict[str, Any], base_dir: Path | None = None) 
         "scale_features",
         "permutation_repeats",
         "paths",
-        "score_preparation",
         "dataset",
         "features",
         "models",
@@ -2246,14 +2239,42 @@ def extract_regressor_config(cfg: dict[str, Any], base_dir: Path | None = None) 
     return result
 
 
-def load_config(path: Path) -> dict[str, Any]:
-    with open(path, encoding="utf-8") as handle:
-        return extract_regressor_config(json.load(handle), path.parent)
+def load_packaged_config(name: str) -> dict[str, Any]:
+    with resources.files("qualisr.configs").joinpath(name).open(encoding="utf-8") as handle:
+        cfg = extract_regressor_config(json.load(handle), None)
+
+    if name == "default.json":
+        sample_root = resources.files("qualisr.sample_data")
+        cfg = deep_update(
+            cfg,
+            {
+                "paths": {
+                    "labels": str(sample_root.joinpath("scores", "labels.csv")),
+                    "features_root": str(sample_root.joinpath("features")),
+                },
+            },
+        )
+    return cfg
+
+
+def load_config(path: Path | None = None) -> dict[str, Any]:
+    if path is None:
+        return load_packaged_config("default.json")
+    if path.exists():
+        with open(path, encoding="utf-8") as handle:
+            return extract_regressor_config(json.load(handle), path.parent)
+    if path.as_posix() == "configs/default.json":
+        return load_packaged_config("default.json")
+    raise FileNotFoundError(f"Regressor config not found: {path}")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run configured QualiSR-Lab regressor experiments.")
-    parser.add_argument("--config", default="configs/default.json", help="Path to experiment JSON config.")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to experiment JSON config. Defaults to packaged qualisr/configs/default.json.",
+    )
     parser.add_argument("--experiment-name", default=None, help="Override config experiment_name.")
     parser.add_argument("--plots-root", default=None, help="Override config paths.plots_root.")
     parser.add_argument("--no-plots", action="store_true", help="Skip plot generation.")
@@ -2293,7 +2314,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    cfg = load_config(Path(args.config))
+    cfg = load_config(Path(args.config) if args.config is not None else None)
 
     overrides: dict[str, Any] = {}
     if args.experiment_name is not None:

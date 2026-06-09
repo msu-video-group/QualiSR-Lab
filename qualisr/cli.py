@@ -7,39 +7,39 @@ import sys
 from collections.abc import Sequence
 
 SCRIPT_COMMANDS = {
-    "make-reference": "scripts.make_reference",
-    "extract-features": "scripts.get_image_features",
-    "apply-pca": "scripts.apply_pca",
-    "compute-stats": "scripts.compute_statistics",
-    "run-pipeline": "qualisr_lab.pipeline",
+    "make-reference": "qualisr.references",
+    "extract-features": "qualisr.features",
+    "apply-pca": "qualisr.pca",
+    "compute-stats": "qualisr.statistics",
+    "run-pipeline": "qualisr.pipeline",
 }
 
 
 def _run_module_main(module_name: str, argv: Sequence[str] | None = None) -> None:
-    module = importlib.import_module(module_name)
     if argv is not None:
         sys.argv = [module_name.rsplit(".", 1)[-1], *argv]
+    module = importlib.import_module(module_name)
     module.main()
 
 
 def make_reference_main() -> None:
-    _run_module_main("scripts.make_reference")
+    _run_module_main("qualisr.references")
 
 
 def extract_features_main() -> None:
-    _run_module_main("scripts.get_image_features")
+    _run_module_main("qualisr.features")
 
 
 def apply_pca_main() -> None:
-    _run_module_main("scripts.apply_pca")
+    _run_module_main("qualisr.pca")
 
 
 def compute_stats_main() -> None:
-    _run_module_main("scripts.compute_statistics")
+    _run_module_main("qualisr.statistics")
 
 
 def run_pipeline_main() -> None:
-    _run_module_main("qualisr_lab.pipeline")
+    _run_module_main("qualisr.pipeline")
 
 
 def _print_run_regressors_help() -> None:
@@ -74,7 +74,7 @@ def run_regressors_main() -> None:
         _print_run_regressors_help()
         return
 
-    from qualisr_lab.regressors import main
+    from qualisr.regressors import main
 
     main()
 
@@ -84,7 +84,7 @@ def _print_help() -> None:
     print(
         "QualiSR-Lab command dispatcher\n\n"
         "Usage:\n"
-        "  python -m qualisr_lab.cli <command> [args]\n\n"
+        "  python -m qualisr.cli <command> [args]\n\n"
         "Commands:\n"
         f"{commands}\n\n"
         "Each command also has a console-script alias, for example "
@@ -104,7 +104,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             _print_run_regressors_help()
             return
 
-        from qualisr_lab.regressors import main as regressors_main
+        from qualisr.regressors import main as regressors_main
 
         regressors_main(command_args)
         return

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import logging
 import os
@@ -10,11 +12,22 @@ from typing import TypeVar
 
 import numpy as np
 import pandas as pd
-import torch
-import torch.nn.functional as F
 from PIL import Image
-from torchvision import models, transforms
-from torchvision.transforms import functional as TF
+
+try:
+    import torch
+    import torch.nn.functional as F
+    from torchvision import models, transforms
+    from torchvision.transforms import functional as TF
+except ModuleNotFoundError as exc:
+    torch = None
+    F = None
+    models = None
+    transforms = None
+    TF = None
+    FEATURE_DEPENDENCY_ERROR = exc
+else:
+    FEATURE_DEPENDENCY_ERROR = None
 
 FR_METRICS: Sequence[str] = (
     "psnr",
@@ -43,6 +56,17 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
 
 LOGGER = logging.getLogger("get_image_features")
 T = TypeVar("T")
+
+
+def require_feature_dependencies() -> None:
+    if FEATURE_DEPENDENCY_ERROR is None:
+        return
+    missing = FEATURE_DEPENDENCY_ERROR.name or str(FEATURE_DEPENDENCY_ERROR)
+    raise SystemExit(
+        f"Missing optional dependency '{missing}' for feature extraction. "
+        "Install the feature extras with `python -m pip install 'qualisr-lab[features]'` "
+        "or, from a clone, `python -m pip install -e '.[features]'`."
+    )
 
 
 def safe_column_prefix(name: str) -> str:
@@ -683,6 +707,7 @@ def maybe_raise_or_warn(message: str, strict: bool) -> None:
 def main() -> None:
     args = parse_args()
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(levelname)s: %(message)s")
+    require_feature_dependencies()
 
     requested_features = parse_features(args.features)
     fr_metrics = parse_metric_list(args.fr_metrics, FR_METRICS)

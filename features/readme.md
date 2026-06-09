@@ -5,7 +5,7 @@
 QualiSR-Lab is designed to be easy to extend with new feature groups.
 
 - **FR/NR metrics via PyIQA.**  
-  If a metric is available in [PyIQA](https://github.com/chaofengc/IQA-PyTorch), you can add or remove it by editing the corresponding metric lists in [`scripts/get_image_features.py`](../scripts/get_image_features.py).
+  If a metric is available in [PyIQA](https://github.com/chaofengc/IQA-PyTorch), you can add or remove it by editing the corresponding metric lists in [`qualisr/features.py`](../qualisr/features.py).
 
 - **External features from CSV.**  
   Any custom features can be prepared separately and stored in `.csv` files. These files can then be referenced in the configuration file and used directly for regressor training.

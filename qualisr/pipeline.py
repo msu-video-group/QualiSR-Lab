@@ -8,16 +8,46 @@ import json
 import sys
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
+from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 from typing import Any
-
 
 SECTION_ORDER = ("references", "features", "pca", "statistics", "regressors")
 
 
-def load_pipeline_config(path: Path) -> dict[str, Any]:
-    with open(path, encoding="utf-8") as handle:
+@dataclass(slots=True)
+class PipelineOptions:
+    """Library-friendly options for running a unified pipeline config."""
+
+    only_section: Sequence[str] | None = None
+    skip_section: Sequence[str] | None = None
+    experiment_name: str | None = None
+    plots_root: str | None = None
+    no_plots: bool = False
+    save_svg: bool = False
+
+
+def load_packaged_pipeline_config() -> dict[str, Any]:
+    with resources.files("qualisr.configs").joinpath("pipeline.json").open(encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def load_pipeline_config(path: Path | None = None) -> dict[str, Any]:
+    if path is None:
+        return load_packaged_pipeline_config()
+    if path.exists():
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle)
+    if path.as_posix() == "configs/pipeline.json":
+        return load_packaged_pipeline_config()
+    raise FileNotFoundError(f"Pipeline config not found: {path}")
+
+
+def config_base_dir(path: Path | None) -> Path:
+    if path is not None and path.exists():
+        return path.parent
+    return Path.cwd()
 
 
 def deep_update(base: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
@@ -141,7 +171,7 @@ def run_references(cfg: Mapping[str, Any]) -> None:
     add_bool(argv, "--overwrite", cfg.get("overwrite"))
     add_bool(argv, "--strict", cfg.get("strict"))
     add_bool(argv, "--no-progress", cfg.get("no_progress"))
-    run_module_main("scripts.make_reference", argv)
+    run_module_main("qualisr.references", argv)
 
 
 def feature_group_items(cfg: Mapping[str, Any]) -> list[tuple[str, Mapping[str, Any]]]:
@@ -191,7 +221,7 @@ def run_feature_group(common: Mapping[str, Any], name: str, group: Mapping[str, 
     add_bool(argv, "--profile-flops", merged.get("profile_flops"))
     add_bool(argv, "--timm-no-pretrained", merged.get("timm_no_pretrained"))
     add_bool(argv, "--strict", merged.get("strict"))
-    run_module_main("scripts.get_image_features", argv)
+    run_module_main("qualisr.features", argv)
 
 
 def run_features(cfg: Mapping[str, Any]) -> None:
@@ -243,7 +273,7 @@ def run_pca(cfg: Mapping[str, Any]) -> None:
         add_value(argv, "--log-level", merged.get("log_level"))
         add_bool(argv, "--keep-original-blocks", merged.get("keep_original_blocks"))
         add_bool(argv, "--disable-auto-split", merged.get("disable_auto_split"))
-        run_module_main("scripts.apply_pca", argv)
+        run_module_main("qualisr.pca", argv)
 
 
 def run_statistics(cfg: Mapping[str, Any]) -> None:
@@ -259,7 +289,7 @@ def run_statistics(cfg: Mapping[str, Any]) -> None:
     add_bool(argv, "--recursive", cfg.get("recursive"))
     add_bool(argv, "--strict", cfg.get("strict"))
     add_bool(argv, "--no-progress", cfg.get("no_progress"))
-    run_module_main("scripts.compute_statistics", argv)
+    run_module_main("qualisr.statistics", argv)
 
 
 def collect_feature_categories(features_cfg: Mapping[str, Any] | None) -> dict[str, list[str]]:
@@ -313,10 +343,10 @@ def _config_list_for_categories(value: Any) -> list[str]:
 def run_regressors_section(
     cfg: Mapping[str, Any],
     base_dir: Path,
-    args: argparse.Namespace,
+    options: PipelineOptions,
     features_cfg: Mapping[str, Any] | None = None,
 ) -> None:
-    from qualisr_lab.regressors import extract_regressor_config, run_experiment
+    from qualisr.regressors import extract_regressor_config, run_experiment
 
     regressor_cfg = extract_regressor_config({"regressors": dict(cfg)}, base_dir)
     inferred_categories = collect_feature_categories(features_cfg)
@@ -327,24 +357,45 @@ def run_regressors_section(
         )
     overrides: dict[str, Any] = {}
 
-    if args.experiment_name is not None:
-        overrides["experiment_name"] = args.experiment_name
-    if args.plots_root is not None:
-        overrides.setdefault("paths", {})["plots_root"] = args.plots_root
-    if args.save_svg:
+    if options.experiment_name is not None:
+        overrides["experiment_name"] = options.experiment_name
+    if options.plots_root is not None:
+        overrides.setdefault("paths", {})["plots_root"] = options.plots_root
+    if options.save_svg:
         overrides.setdefault("plot", {})["save_svg"] = True
     if overrides:
         regressor_cfg = deep_update(regressor_cfg, overrides)
 
-    make_plots = bool(cfg.get("make_plots", True)) and not args.no_plots
+    make_plots = bool(cfg.get("make_plots", True)) and not options.no_plots
     result = run_experiment(regressor_cfg, make_plots=make_plots)
     print(f"Saved regressor results to {result['output_dir']}")
     print(result["results"].to_string(index=False))
 
 
-def run_pipeline(cfg: dict[str, Any], config_path: Path, args: argparse.Namespace) -> None:
-    selected = set(args.only_section or SECTION_ORDER)
-    skipped = set(args.skip_section or [])
+def pipeline_options_from_namespace(args: argparse.Namespace) -> PipelineOptions:
+    return PipelineOptions(
+        only_section=args.only_section,
+        skip_section=args.skip_section,
+        experiment_name=args.experiment_name,
+        plots_root=args.plots_root,
+        no_plots=args.no_plots,
+        save_svg=args.save_svg,
+    )
+
+
+def run_pipeline(
+    cfg: dict[str, Any],
+    base_dir: Path | str | None = None,
+    options: PipelineOptions | argparse.Namespace | None = None,
+) -> None:
+    if options is None:
+        options = PipelineOptions()
+    elif isinstance(options, argparse.Namespace):
+        options = pipeline_options_from_namespace(options)
+
+    base_path = Path.cwd() if base_dir is None else Path(base_dir)
+    selected = set(options.only_section or SECTION_ORDER)
+    skipped = set(options.skip_section or [])
 
     for section_name in SECTION_ORDER:
         if section_name not in selected or section_name in skipped:
@@ -363,12 +414,16 @@ def run_pipeline(cfg: dict[str, Any], config_path: Path, args: argparse.Namespac
             run_statistics(section_cfg)
         elif section_name == "regressors":
             features_cfg = cfg.get("features", {})
-            run_regressors_section(section_cfg, config_path.parent, args, features_cfg=features_cfg)
+            run_regressors_section(section_cfg, base_path, options, features_cfg=features_cfg)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the unified QualiSR-Lab pipeline config.")
-    parser.add_argument("--config", default="configs/pipeline.json", help="Unified pipeline JSON config.")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Unified pipeline JSON config. Defaults to packaged qualisr/configs/pipeline.json.",
+    )
     parser.add_argument("--only-section", nargs="+", choices=SECTION_ORDER, default=None)
     parser.add_argument("--skip-section", nargs="+", choices=SECTION_ORDER, default=None)
     parser.add_argument("--experiment-name", default=None, help="Override nested regressor experiment_name.")
@@ -380,9 +435,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
-    config_path = Path(args.config)
+    config_path = Path(args.config) if args.config is not None else None
     cfg = load_pipeline_config(config_path)
-    run_pipeline(cfg, config_path, args)
+    run_pipeline(cfg, config_base_dir(config_path), pipeline_options_from_namespace(args))
 
 
 if __name__ == "__main__":

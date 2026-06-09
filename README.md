@@ -35,13 +35,21 @@ The sections below describe the required data format and the workflow.
 ![Pipeline overview](pipeline.png)
 ---
 
-## 🐌 Quickstart With Precomputed Features
+## 🐌 Quickstart With Bundled Sample Data
 
-The fastest smoke test uses the precomputed CSV files already tracked in this
-repository.
+The fastest smoke test uses the small score/feature CSV sample bundled inside
+the Python package, so it works after pip installation without downloading the
+full dataset.
 
 ```bash
 python -m pip install -e ".[regressors]"
+qualisr-run-regressors
+```
+
+From a cloned repository, you can also run against the editable root
+`configs/`, `scores/`, and `features/` files explicitly:
+
+```bash
 qualisr-run-regressors --config configs/default.json
 ```
 
@@ -69,7 +77,6 @@ package inside the image.
 
 ## 🛠️ Installation Options
 
-
 For the regression pipeline only:
 
 ```bash
@@ -82,16 +89,42 @@ For full feature extraction on CPU:
 python -m pip install -e ".[features,regressors]"
 ```
 
-For development:
+Also available on PyPI:
 
 ```bash
-python -m pip install -e ".[dev,regressors]"
-pytest
+python -m pip install "qualisr-lab[features,regressors]"
 ```
 
 The legacy fully pinned environment is kept in `requirements.txt`.
 
 See [dataset/readme.md](dataset/readme.md) for dataset download notes.
+
+---
+
+## 🧩 Python API
+
+The CLI remains the recommended way to run full experiments, but installed
+packages also expose a small stable API:
+
+```python
+from qualisr import load_regressor_config, run_regressor_experiment
+
+cfg = load_regressor_config()
+result = run_regressor_experiment(cfg, make_plots=False)
+print(result["results"])
+```
+
+For the unified pipeline:
+
+```python
+from qualisr import PipelineOptions, load_pipeline_config, run_pipeline
+
+cfg = load_pipeline_config()
+run_pipeline(cfg, options=PipelineOptions(only_section=["regressors"], no_plots=True))
+```
+
+Implementation modules such as `qualisr.regressors`, `qualisr.features`, and
+`qualisr.pipeline` remain importable for advanced use.
 
 ---
 
@@ -107,10 +140,10 @@ qualisr-run-pipeline --config configs/pipeline.json
 You can also use BASH script:
 
 ```bash
-bash scripts/reproduce_pipeline.sh
+bash reproduce_pipeline.sh
 ```
 
-The script writes feature-group CSVs such as `features/fr.csv`, `features/nr.csv`, and `features/vgg.csv`, PCA outputs to `features/pca/`, prepared scores to `scores/`, and plots/results to `plots/`.
+The script writes feature-group CSVs such as `features/fr.csv`, `features/nr.csv`, and `features/vgg.csv`, PCA outputs to `features/pca/`, and plots/results to `plots/`.
 
 ---
 
@@ -121,6 +154,9 @@ You may either launch the whole pipeline in a single command with your JSON conf
 ### Step 0 (optional): Prepare reference images
 
 Produce [RLFN](https://github.com/bytedance/RLFN) / [SPAN](https://github.com/zononhzy/SPAN) / bicubic images for LR + SR pairs (used to compute FR metrics).
+The bundled `realtime_sr/` directory is a clone-only convenience asset; pip
+installs do not include these scripts/checkpoints, so pass your own paths for
+RLFN/SPAN when running outside the repository.
 
 ```bash
 qualisr-make-reference \

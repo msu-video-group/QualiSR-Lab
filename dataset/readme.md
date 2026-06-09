@@ -68,10 +68,11 @@ SR images must have normalized quality scores in the range `[0, 1]`:
 ```csv
 labels.csv
 
-test_case,method,score_norm
-0000001,sr_method_1,0.72
-0000001,sr_method_2,0.25
-0000002,sr_method_1,0.59
+test_case,method,score,image
+0000001,pasd,0.72,sr/PASD/0000001.png
+0000001,supir,0.25,sr/SUPIR/0000001.png
+0000001,realesrgan,0.61,sr/RealESRGAN/0000001.png
+0000002,pasd,0.59,sr/PASD/0000002.png
 ...
 ```
 

@@ -4,7 +4,7 @@ Output naming:
     <sr_stem>@<sr_method>@<ref_suffix><output_ext>
 
 Typical usage:
-    python scripts/make_reference.py \
+    python -m qualisr.references \
       --lr-dir /data/LR \
       --sr-dirs PASD=/data/SR/PASD SUPIR=/data/SR/SUPIR RealESRGAN=/data/SR/RealESRGAN \
       --out-root /data/references \
@@ -21,12 +21,11 @@ import logging
 import shlex
 import subprocess
 from collections import Counter, defaultdict
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence
 
 from PIL import Image
 from tqdm import tqdm
-
 
 LOGGER = logging.getLogger("gt_rf")
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
@@ -43,9 +42,9 @@ DEFAULT_SPAN_TEMPLATE = (
 class ImageIndex:
     def __init__(self, directory: Path) -> None:
         self.directory = directory
-        self.files: List[Path] = []
-        self.by_name: Dict[str, Path] = {}
-        self.by_stem: Dict[str, List[Path]] = defaultdict(list)
+        self.files: list[Path] = []
+        self.by_name: dict[str, Path] = {}
+        self.by_stem: dict[str, list[Path]] = defaultdict(list)
         self._index()
 
     def _index(self) -> None:
@@ -59,7 +58,7 @@ class ImageIndex:
         for stem in self.by_stem:
             self.by_stem[stem].sort(key=lambda p: p.name.lower())
 
-    def find_match(self, source: Path) -> Optional[Path]:
+    def find_match(self, source: Path) -> Path | None:
         exact = self.by_name.get(source.name.lower())
         if exact is not None:
             return exact
@@ -161,8 +160,8 @@ def parse_named_paths(
     specs: Iterable[str],
     flag_name: str,
     lowercase_keys: bool = False,
-) -> Dict[str, Path]:
-    parsed: Dict[str, Path] = {}
+) -> dict[str, Path]:
+    parsed: dict[str, Path] = {}
 
     for spec in specs:
         if "=" not in spec:
@@ -189,7 +188,7 @@ def ensure_existing_dir(path: Path, label: str) -> None:
         raise FileNotFoundError(f"{label} does not exist or is not a directory: {path}")
 
 
-def resolve_output_dirs(args: argparse.Namespace, refs: Sequence[str]) -> Dict[str, Path]:
+def resolve_output_dirs(args: argparse.Namespace, refs: Sequence[str]) -> dict[str, Path]:
     ref_dirs = (
         parse_named_paths(args.ref_dirs, "--ref-dirs", lowercase_keys=True) if args.ref_dirs else {}
     )
@@ -208,7 +207,7 @@ def resolve_output_dirs(args: argparse.Namespace, refs: Sequence[str]) -> Dict[s
     if out_root is not None:
         out_root.mkdir(parents=True, exist_ok=True)
 
-    resolved: Dict[str, Path] = {}
+    resolved: dict[str, Path] = {}
     for ref in refs:
         if ref in ref_dirs:
             out_dir = ref_dirs[ref]
@@ -235,7 +234,7 @@ def maybe_raise(message: str, strict: bool) -> None:
     LOGGER.warning(message)
 
 
-def render_command(template: str, values: Dict[str, str]) -> str:
+def render_command(template: str, values: dict[str, str]) -> str:
     safe = {k: shlex.quote(v) for k, v in values.items()}
     return template.format(**safe)
 
@@ -244,8 +243,7 @@ def run_inference_command(command: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         command,
         shell=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
     )
 

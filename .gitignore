@@ -176,7 +176,6 @@ pyrightconfig.json
 # End of https://www.toptal.com/developers/gitignore/api/python
 
 catboost_info/
-sorted_plots/
 stuff/
 features.sh
 pca.sh
@@ -192,7 +191,6 @@ dataset/hr
 dataset/lr
 dataset/ref
 dataset/sr
-dataset/labels.csv
 
-plots/test*
 configs/test*
+*.egg-info/
