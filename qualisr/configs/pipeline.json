@@ -207,7 +207,7 @@
                 "enabled": true,
                 "method_column": "method",
                 "case_column": "test_case",
-                "score_column": "score_norm",
+                "score_column": "score",
                 "method_map": {
                     "pasd": "PASD",
                     "supir": "SUPIR",
