@@ -65,7 +65,7 @@
     "paths": {
         "features_root": "features",
         "plots_root": "plots",
-        "labels": "scores/labels.csv"
+        "labels": "dataset/labels.csv"
     },
     "dataset": {
         "name_column": "name",
