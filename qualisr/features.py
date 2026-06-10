@@ -347,7 +347,14 @@ def init_fr_models(device: torch.device, metrics: Sequence[str]) -> dict[str, ob
     models_dict = {}
     for metric in metrics:
         LOGGER.info("Initializing FR metric: %s", metric)
-        models_dict[metric] = pyiqa.create_metric(metric, device=device)
+        try:
+            models_dict[metric] = pyiqa.create_metric(metric, device=device)
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                f"Failed to initialize PyIQA FR metric '{metric}' because dependency "
+                f"'{exc.name}' is missing. Install feature dependencies with "
+                "`python -m pip install \"qualisr-lab[features]\"` or install the missing package directly."
+            ) from exc
     return models_dict
 
 
@@ -357,7 +364,14 @@ def init_nr_models(device: torch.device, metrics: Sequence[str]) -> dict[str, ob
     models_dict = {}
     for metric in metrics:
         LOGGER.info("Initializing NR metric: %s", metric)
-        models_dict[metric] = pyiqa.create_metric(metric, device=device)
+        try:
+            models_dict[metric] = pyiqa.create_metric(metric, device=device)
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                f"Failed to initialize PyIQA NR metric '{metric}' because dependency "
+                f"'{exc.name}' is missing. Install feature dependencies with "
+                "`python -m pip install \"qualisr-lab[features]\"` or install the missing package directly."
+            ) from exc
     return models_dict
 
 

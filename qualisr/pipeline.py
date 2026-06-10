@@ -46,6 +46,8 @@ def load_pipeline_config(path: Path | None = None) -> dict[str, Any]:
 
 def config_base_dir(path: Path | None) -> Path:
     if path is not None and path.exists():
+        if path.parent.name == "configs":
+            return path.parent.parent
         return path.parent
     return Path.cwd()
 

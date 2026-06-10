@@ -266,6 +266,52 @@ def sample_name_from_image_path(value: object, cfg: dict[str, Any]) -> str:
     return f"{method}/{stem}{cfg['dataset']['filename_suffix']}"
 
 
+def normalize_label_method(value: object, cfg: dict[str, Any]) -> str:
+    if pd.isna(value):
+        raise ValueError("Labels contain an empty method value")
+
+    raw = str(value).strip()
+    if not raw:
+        raise ValueError("Labels contain an empty method value")
+
+    aliases = {
+        "pasd": "PASD",
+        "realesrgan": "RealESRGAN",
+        "real_esrgan": "RealESRGAN",
+        "real-esrgan": "RealESRGAN",
+        "supir": "SUPIR",
+    }
+    aliases.update({str(k).lower(): str(v) for k, v in cfg["dataset"].get("method_aliases", {}).items()})
+    return aliases.get(raw.lower(), raw)
+
+
+def sample_name_from_label_parts(row: pd.Series, cfg: dict[str, Any]) -> str:
+    dataset_cfg = cfg["dataset"]
+    test_case_col = dataset_cfg.get("test_case_column", "test_case")
+    method_col = dataset_cfg.get("label_method_column", "method")
+
+    if test_case_col not in row.index or method_col not in row.index:
+        raise ValueError(
+            "Labels contain an empty image path and fallback columns are missing. "
+            f"Expected '{test_case_col}' and '{method_col}'."
+        )
+
+    test_case = row[test_case_col]
+    if pd.isna(test_case) or not str(test_case).strip():
+        raise ValueError("Labels contain an empty test case value")
+
+    method = normalize_label_method(row[method_col], cfg)
+    stem = Path(str(test_case).strip()).stem
+    return f"{method}/{stem}{dataset_cfg['filename_suffix']}"
+
+
+def sample_name_from_label_row(row: pd.Series, cfg: dict[str, Any], image_col: str) -> str:
+    value = row.get(image_col)
+    if not pd.isna(value) and str(value).strip():
+        return sample_name_from_image_path(value, cfg)
+    return sample_name_from_label_parts(row, cfg)
+
+
 def load_scores(cfg: dict[str, Any]) -> pd.DataFrame:
     labels_path = cfg["paths"].get("labels")
     if labels_path is None:
@@ -278,8 +324,21 @@ def load_scores(cfg: dict[str, Any]) -> pd.DataFrame:
     if name_col not in scores.columns:
         image_col = cfg["dataset"].get("image_column", "image")
         if image_col not in scores.columns:
-            raise ValueError(f"Labels file must contain either '{name_col}' or '{image_col}' column")
-        scores[name_col] = scores[image_col].map(lambda value: sample_name_from_image_path(value, cfg))
+            try:
+                scores[name_col] = scores.apply(lambda row: sample_name_from_label_parts(row, cfg), axis=1)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Labels file must contain either '{name_col}' or '{image_col}' column, "
+                    "or fallback columns 'test_case' and 'method'."
+                ) from exc
+        else:
+            try:
+                scores[name_col] = scores.apply(
+                    lambda row: sample_name_from_label_row(row, cfg, image_col),
+                    axis=1,
+                )
+            except ValueError as exc:
+                raise ValueError(f"Could not derive sample names from labels file '{labels_path}': {exc}") from exc
 
     if score_col not in scores.columns:
         fallback = [c for c in ["score", "scores", "mos", "mos_norm", "score_norm"] if c in scores.columns]
@@ -2257,14 +2316,74 @@ def load_packaged_config(name: str) -> dict[str, Any]:
     return cfg
 
 
+def resolve_path_from_config(value: Any, base_dir: Path) -> Any:
+    if value is None:
+        return value
+
+    raw = str(value)
+    if not raw or "{" in raw:
+        return value
+
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return raw
+    return str(base_dir / path)
+
+
+def config_value_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def config_file_base_dir(path: Path) -> Path:
+    parent = path.parent
+    if parent.name == "configs":
+        return parent.parent
+    return parent
+
+
+def resolve_regressor_config_paths(cfg: dict[str, Any], base_dir: Path | None) -> dict[str, Any]:
+    if base_dir is None:
+        return cfg
+
+    result = deepcopy(cfg)
+    paths_cfg = result.get("paths", {})
+    if isinstance(paths_cfg, dict):
+        for key in ("labels", "features_root", "plots_root"):
+            if key in paths_cfg:
+                paths_cfg[key] = resolve_path_from_config(paths_cfg[key], base_dir)
+
+    profile_cfg = result.get("profiling", {})
+    if isinstance(profile_cfg, dict):
+        for key in ("regressor_output", "regressor_total_output"):
+            if key in profile_cfg:
+                profile_cfg[key] = resolve_path_from_config(profile_cfg[key], base_dir)
+
+        if isinstance(profile_cfg.get("feature_profile_files"), list):
+            profile_cfg["feature_profile_files"] = [
+                resolve_path_from_config(item, base_dir) for item in profile_cfg["feature_profile_files"]
+            ]
+
+        if isinstance(profile_cfg.get("feature_profiles"), dict):
+            profile_cfg["feature_profiles"] = {
+                name: [resolve_path_from_config(item, base_dir) for item in config_value_list(values)]
+                for name, values in profile_cfg["feature_profiles"].items()
+            }
+
+    return result
+
+
 def load_config(path: Path | None = None) -> dict[str, Any]:
     if path is None:
         return load_packaged_config("default.json")
     if path.exists():
+        base_dir = config_file_base_dir(path)
         with open(path, encoding="utf-8") as handle:
-            return extract_regressor_config(json.load(handle), path.parent)
-    if path.as_posix() == "configs/default.json":
-        return load_packaged_config("default.json")
+            cfg = extract_regressor_config(json.load(handle), base_dir)
+        return resolve_regressor_config_paths(cfg, base_dir)
     raise FileNotFoundError(f"Regressor config not found: {path}")
 
 

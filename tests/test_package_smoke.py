@@ -4,6 +4,9 @@ import os
 import subprocess
 import sys
 from importlib import resources
+from pathlib import Path
+
+import pandas as pd
 
 
 def run_cli(*args: str, tmp_path) -> subprocess.CompletedProcess[str]:
@@ -92,3 +95,42 @@ def test_regressors_default_uses_packaged_sample_data(tmp_path) -> None:
     )
     assert "Saved results to" in result.stdout
     assert (tmp_path / "plots" / "baseline@pca5" / "correlations" / "correlations.csv").is_file()
+
+
+def test_labels_with_blank_image_fall_back_to_method_and_test_case(tmp_path) -> None:
+    from qualisr.regressors import load_config, load_scores
+
+    cfg = load_config()
+    labels = pd.read_csv(cfg["paths"]["labels"])
+    labels.loc[0, "image"] = ""
+    labels_path = tmp_path / "labels.csv"
+    labels.to_csv(labels_path, index=False)
+
+    cfg["paths"]["labels"] = str(labels_path)
+    scores = load_scores(cfg)
+
+    assert scores.loc[0, cfg["dataset"]["name_column"]].startswith("PASD/")
+
+
+def test_explicit_config_paths_are_resolved_from_config_directory(tmp_path, monkeypatch) -> None:
+    from qualisr.regressors import load_config
+
+    repo_root = Path(__file__).resolve().parents[1]
+    monkeypatch.chdir(tmp_path)
+
+    cfg = load_config(repo_root / "configs" / "default.json")
+
+    assert Path(cfg["paths"]["labels"]) == repo_root / "dataset" / "labels.csv"
+
+
+def test_missing_explicit_config_does_not_fall_back_to_packaged_default(tmp_path, monkeypatch) -> None:
+    from qualisr.regressors import load_config
+
+    monkeypatch.chdir(tmp_path)
+
+    try:
+        load_config(Path("configs/default.json"))
+    except FileNotFoundError:
+        return
+
+    raise AssertionError("missing explicit config unexpectedly loaded packaged default")
