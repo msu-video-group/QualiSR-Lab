@@ -13,8 +13,6 @@
 
 <sup>3</sup>MSU Institute for Artificial Intelligence, Lomonosov Moscow State University
 
-🚩 *Submitted to [ACM MM 2026 Open Source Software](https://2026.acmmm.org/site/call-open-source.html).*
-
 ## 🔎 Overview
 
 This project studies which features extracted from Low-Resolution (LR) and Super-Resolution (SR) images are most informative for Image Quality Assessment (IQA). Its purpose is to assist researchers in studying the best features for their upscaled image quality metrics by providing a pipeline to extract the features and build a comprehensive graphical summary on their contribution to IQA and correlation of the resulting metric with human scores.
