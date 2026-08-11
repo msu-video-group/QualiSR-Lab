@@ -42,6 +42,7 @@
         "common": {
             "device": "auto",
             "strict": false,
+            "embedding_reference": "bicubic",
             "profile": false,
             "profile_flops": false,
             "fr_metrics": [
@@ -93,6 +94,22 @@
                 "output": "features/resnet.csv",
                 "profile_output": "features/profiling/resnet_profile.csv"
             },
+            "ref_vgg": {
+                "enabled": false,
+                "features": [
+                    "ref-vgg"
+                ],
+                "output": "features/ref_vgg.csv",
+                "profile_output": "features/profiling/ref_vgg_profile.csv"
+            },
+            "ref_resnet": {
+                "enabled": false,
+                "features": [
+                    "ref-resnet"
+                ],
+                "output": "features/ref_resnet.csv",
+                "profile_output": "features/profiling/ref_resnet_profile.csv"
+            },
             "timm": {
                 "enabled": false,
                 "features": [
@@ -104,6 +121,18 @@
                 },
                 "output": "features/timm.csv",
                 "profile_output": "features/profiling/timm_profile.csv"
+            },
+            "ref_timm": {
+                "enabled": false,
+                "features": [
+                    "ref-timm"
+                ],
+                "timm_encoders": {
+                    "convnext_tiny": "convnext_tiny",
+                    "vit_base_patch16_224": "vit_base_patch16_224"
+                },
+                "output": "features/ref_timm.csv",
+                "profile_output": "features/profiling/ref_timm_profile.csv"
             },
             "siglip": {
                 "enabled": true,
@@ -151,6 +180,53 @@
                     "resnet=resnet_"
                 ],
                 "output_template": "resnet_pca{n}.csv"
+            },
+            {
+                "enabled": false,
+                "input": "features/vgg.csv",
+                "reference_input": "features/ref_vgg.csv",
+                "blocks": [
+                    "vgg=vgg_"
+                ],
+                "reference_blocks": [
+                    "vgg=ref_vgg_"
+                ],
+                "output_template": "vgg_shared_pca{n}.csv",
+                "reference_output_template": "ref_vgg_shared_pca{n}.csv"
+            },
+            {
+                "enabled": false,
+                "input": "features/resnet.csv",
+                "reference_input": "features/ref_resnet.csv",
+                "blocks": [
+                    "resnet=resnet_"
+                ],
+                "reference_blocks": [
+                    "resnet=ref_resnet_"
+                ],
+                "output_template": "resnet_shared_pca{n}.csv",
+                "reference_output_template": "ref_resnet_shared_pca{n}.csv"
+            }
+        ]
+    },
+    "embedding_difference": {
+        "enabled": false,
+        "runs": [
+            {
+                "reference_input": "features/pca/ref_vgg_shared_pca5.csv",
+                "sr_input": "features/pca/vgg_shared_pca5.csv",
+                "blocks": [
+                    "vgg_diff=vgg_pca_,vgg_pca_"
+                ],
+                "output": "features/vgg_diff_pca5.csv"
+            },
+            {
+                "reference_input": "features/pca/ref_resnet_shared_pca5.csv",
+                "sr_input": "features/pca/resnet_shared_pca5.csv",
+                "blocks": [
+                    "resnet_diff=resnet_pca_,resnet_pca_"
+                ],
+                "output": "features/resnet_diff_pca5.csv"
             }
         ]
     },

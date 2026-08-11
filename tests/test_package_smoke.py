@@ -92,6 +92,11 @@ def test_feature_help_does_not_require_feature_extras(tmp_path) -> None:
     assert "qualisr-extract-features" in result.stdout or "Compute FR/NR" in result.stdout
 
 
+def test_embedding_difference_help(tmp_path) -> None:
+    result = run_cli("embedding-difference", "--help", tmp_path=tmp_path)
+    assert "SR-minus-reference" in result.stdout
+
+
 def test_regressors_default_uses_packaged_sample_data(tmp_path) -> None:
     result = run_cli(
         "run-regressors",

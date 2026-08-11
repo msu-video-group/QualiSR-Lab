@@ -49,7 +49,19 @@ NR_METRICS: Sequence[str] = (
 NOISE_COMPONENTS = 5
 NOISE_SEED = 42
 
-SUPPORTED_FEATURES: Sequence[str] = ("fr", "nr", "vgg", "resnet", "timm", "siglip", "gaussian", "uniform")
+SUPPORTED_FEATURES: Sequence[str] = (
+    "fr",
+    "nr",
+    "vgg",
+    "resnet",
+    "timm",
+    "ref-vgg",
+    "ref-resnet",
+    "ref-timm",
+    "siglip",
+    "gaussian",
+    "uniform",
+)
 DEFAULT_FEATURES: Sequence[str] = ("fr", "nr", "vgg", "resnet", "siglip", "gaussian", "uniform")
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
 
@@ -611,7 +623,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--features",
         default=",".join(DEFAULT_FEATURES),
-        help="Comma-separated subset of features: fr,nr,vgg,resnet,timm,siglip,gaussian,uniform.",
+        help=(
+            "Comma-separated subset of features: fr,nr,vgg,resnet,timm,"
+            "ref-vgg,ref-resnet,ref-timm,siglip,gaussian,uniform."
+        ),
+    )
+    parser.add_argument(
+        "--embedding-reference",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Reference name to use for ref-vgg/ref-resnet/ref-timm embeddings. "
+            "It must match a --ref-dirs name or a sample ref_paths key."
+        ),
     )
     parser.add_argument(
         "--fr-metrics",
@@ -773,7 +797,18 @@ def main(
     if "fr" in requested_features and gt_index is None and not ref_dirs and samples is None:
         raise ValueError("FR metrics require --gt-dir, --ref-dirs, or sample reference paths")
 
-    if "timm" in requested_features and not timm_encoders:
+    reference_features = {"ref-vgg", "ref-resnet", "ref-timm"}.intersection(requested_features)
+    if reference_features and not args.embedding_reference:
+        raise ValueError(
+            "Reference embedding extraction requires --embedding-reference "
+            "(or features.common.embedding_reference in a pipeline config)"
+        )
+    if reference_features and samples is None and args.embedding_reference not in ref_dirs:
+        raise ValueError(
+            f"Embedding reference '{args.embedding_reference}' is not present in --ref-dirs"
+        )
+
+    if {"timm", "ref-timm"}.intersection(requested_features) and not timm_encoders:
         raise ValueError("timm feature extraction requires at least one --timm-encoders entry")
 
     work_items: list[dict[str, object]] = []
@@ -812,16 +847,16 @@ def main(
 
     vgg_model: torch.nn.Module | None = None
     vgg_transform: transforms.Compose | None = None
-    if "vgg" in requested_features:
+    if {"vgg", "ref-vgg"}.intersection(requested_features):
         vgg_model, vgg_transform = init_vgg(device)
 
     resnet_model: torch.nn.Module | None = None
     resnet_transform: transforms.Compose | None = None
-    if "resnet" in requested_features:
+    if {"resnet", "ref-resnet"}.intersection(requested_features):
         resnet_model, resnet_transform = init_resnet(device)
 
     timm_models: dict[str, tuple[torch.nn.Module, object]] = {}
-    if "timm" in requested_features:
+    if {"timm", "ref-timm"}.intersection(requested_features):
         for encoder_name, model_name in timm_encoders.items():
             timm_models[encoder_name] = init_timm_encoder(
                 model_name,
@@ -871,6 +906,24 @@ def main(
         lr_path = Path(str(lr_value)).expanduser().resolve() if lr_value else None
         if lr_path is not None:
             row["lr_path"] = csv_path(lr_path)
+
+        reference_image: Image.Image | None = None
+        if reference_features:
+            ref_value = dict(item.get("ref_paths") or {}).get(args.embedding_reference)
+            ref_path = Path(str(ref_value)).expanduser().resolve() if ref_value else None
+            if ref_path is None:
+                maybe_raise_or_warn(
+                    f"Missing embedding reference '{args.embedding_reference}' for {sr_path.name}",
+                    args.strict,
+                )
+            else:
+                try:
+                    reference_image = load_image_rgb(ref_path)
+                except Exception as exc:
+                    maybe_raise_or_warn(
+                        f"Failed to load embedding reference {ref_path}: {exc}",
+                        args.strict,
+                    )
 
         if "nr" in requested_features and nr_models is not None:
             for metric_name, model in nr_models.items():
@@ -1048,6 +1101,113 @@ def main(
                 except Exception as exc:
                     maybe_raise_or_warn(
                         f"timm encoder '{encoder_name}' extraction failed on {sr_path.name}: {exc}",
+                        args.strict,
+                    )
+
+        if (
+            "ref-vgg" in requested_features
+            and reference_image is not None
+            and vgg_model is not None
+            and vgg_transform is not None
+        ):
+            try:
+                ref_vgg_features = timed_call(
+                    profiler,
+                    "ref_vgg",
+                    lambda reference_image=reference_image: extract_pretrained_features(
+                        reference_image, vgg_model, vgg_transform, device
+                    ),
+                    device,
+                )
+                if profiler is not None:
+                    profiler.records["ref_vgg"]["feature_count"] = float(len(ref_vgg_features))
+                if args.profile_flops:
+                    profile_torch_flops(
+                        profiler,
+                        "ref_vgg",
+                        lambda reference_image=reference_image: extract_pretrained_features(
+                            reference_image, vgg_model, vgg_transform, device
+                        ),
+                        device,
+                        feature_count=len(ref_vgg_features),
+                    )
+                for index, value in enumerate(ref_vgg_features):
+                    row[f"ref_vgg_{index:05d}"] = float(value)
+            except Exception as exc:
+                maybe_raise_or_warn(
+                    f"Reference VGG extraction failed on {sr_path.name}: {exc}", args.strict
+                )
+
+        if (
+            "ref-resnet" in requested_features
+            and reference_image is not None
+            and resnet_model is not None
+            and resnet_transform is not None
+        ):
+            try:
+                ref_resnet_features = timed_call(
+                    profiler,
+                    "ref_resnet",
+                    lambda reference_image=reference_image: extract_pretrained_features(
+                        reference_image, resnet_model, resnet_transform, device
+                    ),
+                    device,
+                )
+                if profiler is not None:
+                    profiler.records["ref_resnet"]["feature_count"] = float(
+                        len(ref_resnet_features)
+                    )
+                if args.profile_flops:
+                    profile_torch_flops(
+                        profiler,
+                        "ref_resnet",
+                        lambda reference_image=reference_image: extract_pretrained_features(
+                            reference_image, resnet_model, resnet_transform, device
+                        ),
+                        device,
+                        feature_count=len(ref_resnet_features),
+                    )
+                for index, value in enumerate(ref_resnet_features):
+                    row[f"ref_resnet_{index:05d}"] = float(value)
+            except Exception as exc:
+                maybe_raise_or_warn(
+                    f"Reference ResNet extraction failed on {sr_path.name}: {exc}", args.strict
+                )
+
+        if "ref-timm" in requested_features and reference_image is not None and timm_models:
+            for encoder_name, (timm_model, timm_transform) in timm_models.items():
+                prefix = f"ref_{safe_column_prefix(encoder_name)}"
+                try:
+                    ref_timm_features = timed_call(
+                        profiler,
+                        prefix,
+                        lambda reference_image=reference_image, timm_model=timm_model, timm_transform=timm_transform: (
+                            extract_pretrained_features(
+                                reference_image, timm_model, timm_transform, device
+                            )
+                        ),
+                        device,
+                    )
+                    if profiler is not None:
+                        profiler.records[prefix]["feature_count"] = float(len(ref_timm_features))
+                    if args.profile_flops:
+                        profile_torch_flops(
+                            profiler,
+                            prefix,
+                            lambda reference_image=reference_image, timm_model=timm_model, timm_transform=timm_transform: (
+                                extract_pretrained_features(
+                                    reference_image, timm_model, timm_transform, device
+                                )
+                            ),
+                            device,
+                            feature_count=len(ref_timm_features),
+                        )
+                    for index, value in enumerate(ref_timm_features):
+                        row[f"{prefix}_{index:05d}"] = float(value)
+                except Exception as exc:
+                    maybe_raise_or_warn(
+                        f"Reference timm encoder '{encoder_name}' extraction failed on "
+                        f"{sr_path.name}: {exc}",
                         args.strict,
                     )
 

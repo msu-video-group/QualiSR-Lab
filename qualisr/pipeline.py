@@ -13,7 +13,14 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-SECTION_ORDER = ("references", "features", "pca", "statistics", "regressors")
+SECTION_ORDER = (
+    "references",
+    "features",
+    "pca",
+    "embedding_difference",
+    "statistics",
+    "regressors",
+)
 
 
 @dataclass(slots=True)
@@ -199,6 +206,11 @@ def run_feature_group(
     group: Mapping[str, Any],
     samples: list[dict[str, Any]] | None = None,
 ) -> None:
+    if "embedding_reference" in group:
+        raise ValueError(
+            f"Feature group '{name}' defines embedding_reference; configure it once in "
+            "features.common instead."
+        )
     if not section_enabled(group, default=True):
         return
 
@@ -222,6 +234,7 @@ def run_feature_group(
     add_csv_value(argv, "--fr-metrics", merged.get("fr_metrics"))
     add_csv_value(argv, "--nr-metrics", merged.get("nr_metrics"))
     add_named_specs(argv, "--timm-encoders", merged.get("timm_encoders"))
+    add_value(argv, "--embedding-reference", merged.get("embedding_reference"))
     add_value(argv, "--siglip-model", merged.get("siglip_model"))
     add_value(argv, "--siglip-alpha", merged.get("siglip_alpha"))
     add_value(argv, "--noise-components", merged.get("noise_components"))
@@ -274,10 +287,17 @@ def run_pca(cfg: Mapping[str, Any]) -> None:
 
         argv: list[str] = []
         add_value(argv, "--input", merged.get("input"))
+        add_value(argv, "--reference-input", merged.get("reference_input"))
         add_values(argv, "--n-components", merged.get("n_components"))
         add_values(argv, "--blocks", merged.get("blocks"))
+        add_values(argv, "--reference-blocks", merged.get("reference_blocks"))
         add_value(argv, "--output-dir", merged.get("output_dir"))
         add_value(argv, "--output-template", merged.get("output_template"))
+        add_value(
+            argv,
+            "--reference-output-template",
+            merged.get("reference_output_template"),
+        )
         add_value(argv, "--fit-column", merged.get("fit_column"))
         add_value(argv, "--fit-value", merged.get("fit_value"))
         add_value(argv, "--split-column", merged.get("split_column"))
@@ -292,6 +312,40 @@ def run_pca(cfg: Mapping[str, Any]) -> None:
         add_bool(argv, "--keep-original-blocks", merged.get("keep_original_blocks"))
         add_bool(argv, "--disable-auto-split", merged.get("disable_auto_split"))
         run_module_main("qualisr.pca", argv)
+
+
+def embedding_difference_run_items(cfg: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    runs = cfg.get("runs")
+    if runs is None and "reference_input" in cfg:
+        return [cfg]
+    if isinstance(runs, Mapping):
+        return [run or {} for run in runs.values()]
+    return [run for run in as_list(runs) if isinstance(run, Mapping)]
+
+
+def run_embedding_difference(cfg: Mapping[str, Any]) -> None:
+    common = cfg.get("common", {})
+    if not isinstance(common, Mapping):
+        raise ValueError("embedding_difference.common must be an object")
+
+    for index, run in enumerate(embedding_difference_run_items(cfg)):
+        merged = deep_update(dict(common), dict(run))
+        if not section_enabled(merged, default=True):
+            continue
+        required = ["reference_input", "sr_input", "blocks", "output"]
+        missing = [key for key in required if not merged.get(key)]
+        if missing:
+            raise ValueError(
+                f"Embedding-difference run #{index} is missing required fields: {missing}"
+            )
+
+        argv: list[str] = []
+        add_value(argv, "--reference-input", merged.get("reference_input"))
+        add_value(argv, "--sr-input", merged.get("sr_input"))
+        add_values(argv, "--blocks", merged.get("blocks"))
+        add_value(argv, "--output", merged.get("output"))
+        add_value(argv, "--log-level", merged.get("log_level"))
+        run_module_main("qualisr.embedding_difference", argv)
 
 
 def run_statistics(cfg: Mapping[str, Any], samples: list[dict[str, Any]] | None = None) -> None:
@@ -444,6 +498,8 @@ def run_pipeline(
             run_features(section_cfg, samples=samples)
         elif section_name == "pca":
             run_pca(section_cfg)
+        elif section_name == "embedding_difference":
+            run_embedding_difference(section_cfg)
         elif section_name == "statistics":
             run_statistics(section_cfg, samples=samples)
         elif section_name == "regressors":

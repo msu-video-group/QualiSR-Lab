@@ -179,7 +179,7 @@ qualisr-make-reference \
 
 ### Step 1: Compute image features
 
-Compute FR / NR / [VGG](https://arxiv.org/abs/1409.1556) / [ResNet](https://arxiv.org/abs/1512.03385) / [SigLIP](https://arxiv.org/abs/2303.15343) features for SR images and save them into a single CSV file.
+Compute FR / NR / [VGG](https://arxiv.org/abs/1409.1556) / [ResNet](https://arxiv.org/abs/1512.03385) / [SigLIP](https://arxiv.org/abs/2303.15343) features for SR images and save them into a single CSV file. VGG, ResNet, and timm embeddings can also be extracted from one configured SR-resolution reference type.
 
 SR methods are passed as `METHOD=DIR`.  
 Reference image filenames are expected in the format:
@@ -199,6 +199,24 @@ qualisr-extract-features \
   --device cuda
 ```
 
+To extract the corresponding embeddings from one reference type, select it with
+`--embedding-reference` and use the `ref-vgg`, `ref-resnet`, or `ref-timm`
+feature names. For example:
+
+```bash
+qualisr-extract-features \
+  --sr-dirs PASD=dataset/sr/PASD SUPIR=dataset/sr/SUPIR RealESRGAN=dataset/sr/RealESRGAN \
+  --ref-dirs bicubic=dataset/ref/bicubic \
+  --embedding-reference bicubic \
+  --features ref-vgg,ref-resnet \
+  --output features/reference_embeddings.csv \
+  --device cuda
+```
+
+In the unified pipeline, configure the reference once as
+`features.common.embedding_reference`. All enabled reference-embedding groups
+use that same reference.
+
 Add `--profile` to save `<output_stem>_profile.csv` with mean runtime per feature. Add `--profile-flops` to also estimate PyTorch model FLOPs for features such as VGG, ResNet, SigLIP, and PyIQA metrics; this implies profiling and reruns model calls, so it is slower.
 
 ---
@@ -217,9 +235,43 @@ qualisr-apply-pca \
   --output-dir features/pca
 ```
 
+For component-wise differences after PCA, independently fitted PCA coordinates
+are not comparable. Use paired mode to fit one basis on the stacked SR and
+reference training rows and transform both inputs:
+
+```bash
+qualisr-apply-pca \
+  --input features/vgg.csv \
+  --reference-input features/ref_vgg.csv \
+  --blocks vgg=vgg_ \
+  --reference-blocks vgg=ref_vgg_ \
+  --n-components 5 \
+  --output-dir features/pca \
+  --output-template vgg_shared_pca{n}.csv \
+  --reference-output-template ref_vgg_shared_pca{n}.csv
+```
+
 ---
 
-### Step 3: Compute artifact-mask statistics
+### Step 3 (optional): Compute embedding differences
+
+Compute signed, element-wise `SR - reference` differences. Rows are matched by
+`sample_id`, and block mappings explicitly identify the corresponding columns:
+
+```bash
+qualisr-embedding-difference \
+  --reference-input features/pca/ref_vgg_shared_pca5.csv \
+  --sr-input features/pca/vgg_shared_pca5.csv \
+  --blocks vgg_diff=vgg_pca_,vgg_pca_ \
+  --output features/vgg_diff_pca5.csv
+```
+
+The same command can operate on raw embeddings, for example with
+`--blocks vgg_diff=ref_vgg_,vgg_`.
+
+---
+
+### Step 4: Compute artifact-mask statistics
 
 Compute summary statistics for heatmaps stored as `.npy`, `.npy.gz`, or compatible compressed files.  
 Input directories can be passed as `PREFIX=DIR` to ensure stable sample naming.
@@ -236,7 +288,7 @@ Add `--profile` to save `<output_stem>_profile.csv` with mean runtime and simple
 
 ---
 
-### Step 4: Fit regressors and analyze results
+### Step 5: Fit regressors and analyze results
 
 Train regressors and produce summary on feature importances and correlations. The correlation plot can also include direct NR/FR metric baselines from feature CSV files.
 

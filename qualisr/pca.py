@@ -14,7 +14,7 @@ DEFAULT_BLOCKS: Sequence[str] = ("vgg=vgg_", "resnet=resnet_")
 PATH_COLUMNS: Sequence[str] = ("sr_path", "gt_path", "lr_path")
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Apply PCA to high-dimensional feature blocks (e.g. vgg_*, resnet_*) "
@@ -23,6 +23,14 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument("--input", required=True, help="Input CSV from qualisr-extract-features")
+    parser.add_argument(
+        "--reference-input",
+        default=None,
+        help=(
+            "Optional reference-embedding CSV. When provided, PCA is fit on stacked "
+            "SR and reference training rows and the same basis transforms both inputs."
+        ),
+    )
     parser.add_argument(
         "--n-components",
         nargs="+",
@@ -41,6 +49,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--reference-blocks",
+        nargs="+",
+        default=None,
+        metavar="NAME=PREFIX",
+        help=(
+            "Blocks in --reference-input corresponding by NAME to --blocks. "
+            "Required with --reference-input."
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         default=None,
         help="Directory for output files. Default: input file directory.",
@@ -49,6 +67,14 @@ def parse_args() -> argparse.Namespace:
         "--output-template",
         default="{stem}_pca{n}.csv",
         help="Output file template. Available fields: {stem}, {n}",
+    )
+    parser.add_argument(
+        "--reference-output-template",
+        default=None,
+        help=(
+            "Output template for the transformed reference CSV. Available fields: {stem}, {n}. "
+            "Default: --output-template evaluated with the reference input stem."
+        ),
     )
     parser.add_argument(
         "--keep-original-blocks",
@@ -125,7 +151,7 @@ def parse_args() -> argparse.Namespace:
         default="INFO",
     )
 
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def parse_blocks(block_specs: Sequence[str]) -> list[tuple[str, str]]:
@@ -306,23 +332,118 @@ def make_grouped_split(
     return fit_mask.to_numpy(), labels_series, group_keys
 
 
-def main() -> None:
-    args = parse_args()
+def load_input_csv(path_value: str, label: str) -> tuple[Path, pd.DataFrame]:
+    path = Path(path_value).expanduser().resolve()
+    if not path.exists() or not path.is_file():
+        raise FileNotFoundError(f"{label} CSV not found: {path}")
+
+    LOGGER.info("Loading %s CSV: %s", label, path)
+    frame = pd.read_csv(path)
+    if frame.empty:
+        raise ValueError(f"{label} CSV is empty.")
+    return path, frame
+
+
+def collect_block_columns(
+    df: pd.DataFrame,
+    blocks: Sequence[tuple[str, str]],
+    label: str,
+) -> dict[str, list[str]]:
+    block_columns: dict[str, list[str]] = {}
+    for block_name, prefix in blocks:
+        cols = [col for col in df.columns if col.startswith(prefix)]
+        if not cols:
+            raise ValueError(
+                f"No columns found for {label} block '{block_name}' with prefix '{prefix}'. "
+                "Check the configured blocks or input CSV."
+            )
+        block_columns[block_name] = cols
+        LOGGER.info(
+            "%s block '%s': %d columns (prefix='%s')",
+            label.capitalize(),
+            block_name,
+            len(cols),
+            prefix,
+        )
+    return block_columns
+
+
+def validate_paired_samples(sr_df: pd.DataFrame, reference_df: pd.DataFrame) -> None:
+    for label, frame in (("SR", sr_df), ("reference", reference_df)):
+        if "sample_id" not in frame.columns:
+            raise ValueError(f"{label} CSV must contain a sample_id column for paired PCA.")
+        duplicate_mask = frame["sample_id"].astype(str).duplicated(keep=False)
+        if duplicate_mask.any():
+            duplicate = frame.loc[duplicate_mask, "sample_id"].astype(str).iloc[0]
+            raise ValueError(f"{label} CSV contains duplicate sample_id '{duplicate}'.")
+
+    sr_ids = set(sr_df["sample_id"].astype(str))
+    reference_ids = set(reference_df["sample_id"].astype(str))
+    if sr_ids != reference_ids:
+        missing_reference = sorted(sr_ids - reference_ids)
+        missing_sr = sorted(reference_ids - sr_ids)
+        raise ValueError(
+            "Paired PCA inputs must contain identical sample_id sets. "
+            f"Missing from reference: {missing_reference[:3]}; missing from SR: {missing_sr[:3]}."
+        )
+
+
+def validate_paired_blocks(
+    sr_blocks: Sequence[tuple[str, str]],
+    reference_blocks: Sequence[tuple[str, str]],
+    sr_columns: dict[str, list[str]],
+    reference_columns: dict[str, list[str]],
+) -> None:
+    sr_prefixes = dict(sr_blocks)
+    reference_prefixes = dict(reference_blocks)
+    if set(sr_prefixes) != set(reference_prefixes):
+        raise ValueError(
+            "--blocks and --reference-blocks must define the same block names. "
+            f"SR={sorted(sr_prefixes)}, reference={sorted(reference_prefixes)}"
+        )
+
+    for block_name in sr_prefixes:
+        sr_cols = sr_columns[block_name]
+        reference_cols = reference_columns[block_name]
+        if len(sr_cols) != len(reference_cols):
+            raise ValueError(
+                f"Paired block '{block_name}' has {len(sr_cols)} SR columns but "
+                f"{len(reference_cols)} reference columns."
+            )
+        sr_suffixes = [column[len(sr_prefixes[block_name]) :] for column in sr_cols]
+        reference_suffixes = [
+            column[len(reference_prefixes[block_name]) :] for column in reference_cols
+        ]
+        if sr_suffixes != reference_suffixes:
+            raise ValueError(
+                f"Paired block '{block_name}' has mismatched component suffixes between "
+                "SR and reference inputs."
+            )
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    args = parse_args(argv)
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(levelname)s: %(message)s")
 
-    input_path = Path(args.input).expanduser().resolve()
-    if not input_path.exists() or not input_path.is_file():
-        raise FileNotFoundError(f"Input CSV not found: {input_path}")
+    input_path, df = load_input_csv(args.input, "SR input")
+    paired_mode = args.reference_input is not None
+    if paired_mode != (args.reference_blocks is not None):
+        raise ValueError("--reference-input and --reference-blocks must be provided together.")
+    if args.reference_output_template is not None and not paired_mode:
+        raise ValueError("--reference-output-template requires --reference-input.")
+
+    reference_path: Path | None = None
+    reference_df: pd.DataFrame | None = None
+    reference_blocks: list[tuple[str, str]] = []
+    if paired_mode:
+        reference_path, reference_df = load_input_csv(args.reference_input, "reference input")
+        reference_blocks = parse_blocks(args.reference_blocks)
+        validate_paired_samples(df, reference_df)
 
     n_values = validate_n_components(args.n_components)
     max_n = max(n_values)
 
     blocks = parse_blocks(args.blocks)
-
-    LOGGER.info("Loading input CSV: %s", input_path)
-    df = pd.read_csv(input_path)
-    if df.empty:
-        raise ValueError("Input CSV is empty.")
 
     fit_mask: np.ndarray
     split_labels: pd.Series | None = None
@@ -356,24 +477,52 @@ def main() -> None:
             test_groups,
         )
 
+    reference_fit_mask: np.ndarray | None = None
+    if reference_df is not None:
+        fit_ids = set(df.loc[fit_mask, "sample_id"].astype(str))
+        reference_fit_mask = reference_df["sample_id"].astype(str).isin(fit_ids).to_numpy()
+        copied_column: str | None = None
+        copied_values: pd.Series | None = None
+        if args.fit_column is not None:
+            copied_column = args.fit_column
+            copied_values = df[args.fit_column]
+        elif split_labels is not None:
+            copied_column = args.split_column
+            copied_values = split_labels
+        if copied_column is not None and copied_values is not None:
+            values_by_id = pd.Series(
+                copied_values.to_numpy(),
+                index=df["sample_id"].astype(str),
+            )
+            reference_df[copied_column] = (
+                reference_df["sample_id"].astype(str).map(values_by_id).to_numpy()
+            )
+
     LOGGER.info("Rows: %d (fit rows: %d)", len(df), int(fit_mask.sum()))
 
-    block_columns: dict[str, list[str]] = {}
-    for block_name, prefix in blocks:
-        cols = [col for col in df.columns if col.startswith(prefix)]
-        if not cols:
-            raise ValueError(
-                f"No columns found for block '{block_name}' with prefix '{prefix}'. "
-                "Check --blocks or input CSV."
-            )
-        block_columns[block_name] = cols
-        LOGGER.info("Block '%s': %d columns (prefix='%s')", block_name, len(cols), prefix)
+    block_columns = collect_block_columns(df, blocks, "SR")
+    reference_block_columns: dict[str, list[str]] = {}
+    if reference_df is not None:
+        reference_block_columns = collect_block_columns(reference_df, reference_blocks, "reference")
+        validate_paired_blocks(
+            blocks,
+            reference_blocks,
+            block_columns,
+            reference_block_columns,
+        )
 
     transformed_blocks: dict[str, np.ndarray] = {}
+    transformed_reference_blocks: dict[str, np.ndarray] = {}
 
     for block_name, cols in block_columns.items():
         block_data = df[cols].to_numpy(dtype=np.float32)
         fit_data = block_data[fit_mask]
+        reference_data: np.ndarray | None = None
+        if reference_df is not None and reference_fit_mask is not None:
+            reference_data = reference_df[reference_block_columns[block_name]].to_numpy(
+                dtype=np.float32
+            )
+            fit_data = np.concatenate([fit_data, reference_data[reference_fit_mask]], axis=0)
 
         max_allowed = min(fit_data.shape[0], fit_data.shape[1])
         if max_n > max_allowed:
@@ -391,6 +540,8 @@ def main() -> None:
 
         transformed = pca.transform(block_data).astype(np.float32)
         transformed_blocks[block_name] = transformed
+        if reference_data is not None:
+            transformed_reference_blocks[block_name] = pca.transform(reference_data).astype(np.float32)
 
     if args.keep_original_blocks:
         base_df = df.copy()
@@ -399,6 +550,16 @@ def main() -> None:
         for cols in block_columns.values():
             cols_to_drop.extend(cols)
         base_df = df.drop(columns=cols_to_drop)
+
+    reference_base_df: pd.DataFrame | None = None
+    if reference_df is not None:
+        if args.keep_original_blocks:
+            reference_base_df = reference_df.copy()
+        else:
+            reference_cols_to_drop = []
+            for cols in reference_block_columns.values():
+                reference_cols_to_drop.extend(cols)
+            reference_base_df = reference_df.drop(columns=reference_cols_to_drop)
 
     output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else input_path.parent
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -413,9 +574,32 @@ def main() -> None:
 
         filename = args.output_template.format(stem=input_path.stem, n=n)
         out_path = output_dir / filename
+        reference_out_path: Path | None = None
+        if reference_base_df is not None and reference_path is not None:
+            reference_template = args.reference_output_template or args.output_template
+            reference_filename = reference_template.format(stem=reference_path.stem, n=n)
+            reference_out_path = output_dir / reference_filename
+            if reference_out_path == out_path:
+                raise ValueError(
+                    "SR and reference PCA outputs resolve to the same path. "
+                    "Set --reference-output-template to a distinct filename."
+                )
         out_df = relativize_path_columns(out_df)
         out_df.to_csv(out_path, index=False)
         LOGGER.info("Saved PCA CSV (n=%d): %s", n, out_path)
+
+        if reference_base_df is not None and reference_out_path is not None:
+            reference_out_df = reference_base_df.copy()
+            for block_name in block_columns:
+                values = transformed_reference_blocks[block_name][:, :n]
+                pca_cols = [f"{block_name}_pca_{i:03d}" for i in range(n)]
+                reference_out_df = pd.concat(
+                    [reference_out_df, pd.DataFrame(values, columns=pca_cols)], axis=1
+                )
+
+            reference_out_df = relativize_path_columns(reference_out_df)
+            reference_out_df.to_csv(reference_out_path, index=False)
+            LOGGER.info("Saved reference PCA CSV (n=%d): %s", n, reference_out_path)
 
 
 if __name__ == "__main__":

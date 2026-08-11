@@ -10,6 +10,7 @@ SCRIPT_COMMANDS = {
     "make-reference": "qualisr.references",
     "extract-features": "qualisr.features",
     "apply-pca": "qualisr.pca",
+    "embedding-difference": "qualisr.embedding_difference",
     "compute-stats": "qualisr.statistics",
     "run-pipeline": "qualisr.pipeline",
 }
@@ -32,6 +33,10 @@ def extract_features_main() -> None:
 
 def apply_pca_main() -> None:
     _run_module_main("qualisr.pca")
+
+
+def embedding_difference_main() -> None:
+    _run_module_main("qualisr.embedding_difference")
 
 
 def compute_stats_main() -> None:
