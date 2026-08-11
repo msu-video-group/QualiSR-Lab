@@ -25,9 +25,25 @@ unzip grounding_dataset.zip -d dataset/
 
 ---
 
-## 💿 Dataset Structure
+## 💿 Dataset Input
 
-Below is an example of a valid dataset layout. When using your own data, it should resemble this structure like the dataset we present above. Our dataset includes artifact mask heatmaps but they are not required for the pipeline.
+QualiSR-Lab does not require custom datasets to copy the QualiSR-Set120 layout. The unified pipeline loads one or more datasets through parsing functions. Each parser returns a list of sample dictionaries with these required fields:
+
+```python
+{
+    "dataset": "dataset-name",
+    "test_case": "source-image-id",
+    "method": "sr-method",
+    "hr_path": "/absolute/path/to/hr.png",  # optional
+    "lr_path": "/absolute/path/to/lr.png",
+    "sr_path": "/absolute/path/to/sr.png",
+    "score": 0.72,
+}
+```
+
+Scores must be finite and normalized to `[0, 1]`. Parsers may also return `ref_paths`, `heatmap_path`, `rel_path`, and other metadata. QualiSR-Lab resolves paths, derives a stable dataset-prefixed `sample_id`, and rejects duplicate samples.
+
+The following is the native QualiSR-Set120 layout, handled by the bundled `QualiSR-Set120` parser:
 
 ```
 dataset/
@@ -63,7 +79,7 @@ dataset/
         └── ...
 ```
 
-SR images must have normalized quality scores in the range `[0, 1]`:
+Its SR images have normalized quality scores in `labels.csv`:
 
 ```csv
 labels.csv
@@ -75,6 +91,52 @@ test_case,method,score,image
 0000002,pasd,0.59,sr/PASD/0000002.png
 ...
 ```
+
+If a parser does not provide `heatmap_path`, the pipeline derives it from the SR path. For example, `sr/PASD/0000001.png` maps to `heatmaps/PASD/0000001.npy.gz` below the dataset root.
+
+## Selecting datasets
+
+The default pipeline configuration selects QualiSR-Set120:
+
+```json
+"datasets": [
+    {"name": "QualiSR-Set120", "root": "dataset"}
+]
+```
+
+Multiple entries are concatenated in one run. Bundled names include `QualiSR-Set120`, `dsr-dataset`, `ISRGen-QA`, and `RealSRQ`.
+
+A user parser is selected by file path and function name:
+
+```json
+{
+    "name": "my-dataset",
+    "root": "/data/my-dataset",
+    "parser": {"path": "parsers/my_dataset.py", "function": "parse_dataset"},
+    "kwargs": {"labels_fn": "scores.csv"}
+}
+```
+
+The callable receives the absolute dataset root as its first argument, receives `kwargs` as keyword arguments, and returns the sample dictionaries described above.
+
+For labels-backed datasets with conventional matching, configure the directories directly instead of writing a parser:
+
+```json
+{
+    "name": "my-directory-dataset",
+    "root": "/data/my-dataset",
+    "labels": "labels.csv",
+    "directories": {
+        "hr": "/data/my-dataset/hr",
+        "lr": "/data/my-dataset/lr",
+        "sr": {"method-a": "/data/my-dataset/outputs/method-a"},
+        "refs": {"bicubic": "/data/my-dataset/references/bicubic"},
+        "heatmaps": {"method-a": "/data/my-dataset/masks/method-a"}
+    }
+}
+```
+
+The labels CSV defaults to `test_case`, `method`, `score`, and optional `image` columns. Override those names with an entry-level `columns` object.
 
 ---
 

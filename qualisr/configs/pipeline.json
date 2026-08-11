@@ -1,18 +1,36 @@
 {
+    "datasets": [
+        {
+            "name": "QualiSR-Set120",
+            "root": "dataset"
+        }
+    ],
+    "_dataset_directory_example": {
+        "_comment": "Optional alternative dataset entry using absolute directories; copy this object into datasets and adjust the paths.",
+        "name": "custom-dataset",
+        "root": "/absolute/path/to/dataset",
+        "labels": "/absolute/path/to/dataset/labels.csv",
+        "directories": {
+            "hr": "/absolute/path/to/hr",
+            "lr": "/absolute/path/to/lr",
+            "sr": {
+                "METHOD": "/absolute/path/to/sr/METHOD"
+            },
+            "refs": {
+                "bicubic": "/absolute/path/to/ref/bicubic"
+            },
+            "heatmaps": {
+                "METHOD": "/absolute/path/to/heatmaps/METHOD"
+            }
+        }
+    },
     "references": {
         "enabled": true,
-        "lr_dir": "dataset/lr",
-        "sr_dirs": {
-            "PASD": "dataset/sr/PASD",
-            "SUPIR": "dataset/sr/SUPIR",
-            "RealESRGAN": "dataset/sr/RealESRGAN"
-        },
         "refs": [
             "bicubic",
             "span",
             "rlfn"
         ],
-        "out_root": "dataset/ref/",
         "ref_dirs": {},
         "output_ext": ".png",
         "scale": 4,
@@ -22,18 +40,6 @@
     "features": {
         "enabled": true,
         "common": {
-            "sr_dirs": {
-                "PASD": "dataset/sr/PASD",
-                "SUPIR": "dataset/sr/SUPIR",
-                "RealESRGAN": "dataset/sr/RealESRGAN"
-            },
-            "gt_dir": "dataset/hr",
-            "lr_dir": "dataset/lr",
-            "ref_dirs": {
-                "bicubic": "dataset/ref/bicubic",
-                "span": "dataset/ref/span",
-                "rlfn": "dataset/ref/rlfn"
-            },
             "device": "auto",
             "strict": false,
             "profile": false,
@@ -150,11 +156,6 @@
     },
     "statistics": {
         "enabled": true,
-        "heatmap_dirs": {
-            "PASD": "dataset/heatmaps/PASD",
-            "SUPIR": "dataset/heatmaps/SUPIR",
-            "RealESRGAN": "dataset/heatmaps/RealESRGAN"
-        },
         "output": "features/stats.csv",
         "profile": false,
         "profile_output": "features/profiling/stats_profile.csv",
@@ -237,8 +238,7 @@
             },
             "paths": {
                 "features_root": "features",
-                "plots_root": "plots",
-                "labels": "dataset/labels.csv"
+                "plots_root": "plots"
             },
             "dataset": {
                 "name_column": "name",
@@ -246,7 +246,7 @@
                 "sr_method_column": "sr_method",
                 "sr_filename_column": "sr_filename",
                 "filename_suffix": ".npy.gz",
-                "group_segment_index": 1,
+                "group_segment_index": 2,
                 "group_remove_suffix": ".npy.gz",
                 "metadata_drop": [
                     "sample_id",

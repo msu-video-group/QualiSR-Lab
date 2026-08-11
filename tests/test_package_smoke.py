@@ -28,14 +28,20 @@ def test_public_api_imports() -> None:
     from qualisr import (
         PipelineOptions,
         load_config,
+        load_dataset,
+        load_datasets,
         load_pipeline_config,
         run_pipeline,
         run_regressor_experiment,
     )
 
     assert "load_config" in qualisr.__all__
+    assert "load_dataset" in qualisr.__all__
+    assert "load_datasets" in qualisr.__all__
     assert PipelineOptions.__module__ == "qualisr.pipeline"
     assert load_config.__module__ == "qualisr.api"
+    assert load_dataset.__module__ == "qualisr.datasets"
+    assert load_datasets.__module__ == "qualisr.datasets"
     assert load_pipeline_config.__module__ == "qualisr.api"
     assert run_pipeline.__module__ == "qualisr.api"
     assert run_regressor_experiment.__module__ == "qualisr.api"
@@ -54,6 +60,7 @@ def test_public_api_loads_packaged_configs() -> None:
     pipeline_cfg = load_pipeline_config()
     assert "models" in regressor_cfg
     assert "regressors" in pipeline_cfg
+    assert pipeline_cfg["datasets"] == [{"name": "QualiSR-Set120", "root": "dataset"}]
     assert "qualisr/sample_data" in regressor_cfg["paths"]["features_root"].replace("\\", "/")
 
 
@@ -134,3 +141,20 @@ def test_missing_explicit_config_does_not_fall_back_to_packaged_default(tmp_path
         return
 
     raise AssertionError("missing explicit config unexpectedly loaded packaged default")
+
+
+def test_regressors_load_samples_from_unified_pipeline_config() -> None:
+    from qualisr.regressors import (
+        build_dataset,
+        build_group_keys,
+        load_config_with_samples,
+    )
+
+    repo_root = Path(__file__).resolve().parents[1]
+    cfg, samples = load_config_with_samples(repo_root / "configs" / "pipeline.json")
+
+    assert samples is not None
+    dataset = build_dataset(cfg, samples=samples)
+    groups = build_group_keys(dataset[cfg["dataset"]["name_column"]], cfg)
+    assert len(dataset) == 120
+    assert groups.nunique() == 40

@@ -176,6 +176,12 @@ def run_references(cfg: Mapping[str, Any]) -> None:
     run_module_main("qualisr.references", argv)
 
 
+def run_references_for_samples(cfg: Mapping[str, Any], samples: list[dict[str, Any]]) -> None:
+    from qualisr.references import generate_references
+
+    generate_references(samples, cfg)
+
+
 def feature_group_items(cfg: Mapping[str, Any]) -> list[tuple[str, Mapping[str, Any]]]:
     groups = cfg.get("groups", [])
     if isinstance(groups, Mapping):
@@ -187,7 +193,12 @@ def feature_group_items(cfg: Mapping[str, Any]) -> list[tuple[str, Mapping[str, 
     ]
 
 
-def run_feature_group(common: Mapping[str, Any], name: str, group: Mapping[str, Any]) -> None:
+def run_feature_group(
+    common: Mapping[str, Any],
+    name: str,
+    group: Mapping[str, Any],
+    samples: list[dict[str, Any]] | None = None,
+) -> None:
     if not section_enabled(group, default=True):
         return
 
@@ -223,16 +234,21 @@ def run_feature_group(common: Mapping[str, Any], name: str, group: Mapping[str, 
     add_bool(argv, "--profile-flops", merged.get("profile_flops"))
     add_bool(argv, "--timm-no-pretrained", merged.get("timm_no_pretrained"))
     add_bool(argv, "--strict", merged.get("strict"))
-    run_module_main("qualisr.features", argv)
+    if samples is None:
+        run_module_main("qualisr.features", argv)
+    else:
+        from qualisr.features import main as features_main
+
+        features_main(argv, samples=samples)
 
 
-def run_features(cfg: Mapping[str, Any]) -> None:
+def run_features(cfg: Mapping[str, Any], samples: list[dict[str, Any]] | None = None) -> None:
     common = cfg.get("common", {})
     if not isinstance(common, Mapping):
         raise ValueError("features.common must be an object")
 
     for name, group in feature_group_items(cfg):
-        run_feature_group(common, name, group)
+        run_feature_group(common, name, group, samples=samples)
 
 
 def pca_run_items(cfg: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -278,7 +294,7 @@ def run_pca(cfg: Mapping[str, Any]) -> None:
         run_module_main("qualisr.pca", argv)
 
 
-def run_statistics(cfg: Mapping[str, Any]) -> None:
+def run_statistics(cfg: Mapping[str, Any], samples: list[dict[str, Any]] | None = None) -> None:
     argv: list[str] = []
     add_named_specs(argv, "--heatmap-dirs", cfg.get("heatmap_dirs"))
     add_value(argv, "--output", cfg.get("output"))
@@ -291,7 +307,12 @@ def run_statistics(cfg: Mapping[str, Any]) -> None:
     add_bool(argv, "--recursive", cfg.get("recursive"))
     add_bool(argv, "--strict", cfg.get("strict"))
     add_bool(argv, "--no-progress", cfg.get("no_progress"))
-    run_module_main("qualisr.statistics", argv)
+    if samples is None:
+        run_module_main("qualisr.statistics", argv)
+    else:
+        from qualisr.statistics import main as statistics_main
+
+        statistics_main(argv, samples=samples)
 
 
 def collect_feature_categories(features_cfg: Mapping[str, Any] | None) -> dict[str, list[str]]:
@@ -325,11 +346,7 @@ def collect_feature_categories(features_cfg: Mapping[str, Any] | None) -> dict[s
             for spec in _config_list_for_categories(timm_encoders):
                 categories["timm_prefixes"].append(spec.split("=", 1)[0].strip())
 
-    return {
-        key: sorted(set(value), key=str.lower)
-        for key, value in categories.items()
-        if value
-    }
+    return {key: sorted(set(value), key=str.lower) for key, value in categories.items() if value}
 
 
 def _config_list_for_categories(value: Any) -> list[str]:
@@ -347,6 +364,7 @@ def run_regressors_section(
     base_dir: Path,
     options: PipelineOptions,
     features_cfg: Mapping[str, Any] | None = None,
+    samples: list[dict[str, Any]] | None = None,
 ) -> None:
     from qualisr.regressors import extract_regressor_config, run_experiment
 
@@ -369,7 +387,7 @@ def run_regressors_section(
         regressor_cfg = deep_update(regressor_cfg, overrides)
 
     make_plots = bool(cfg.get("make_plots", True)) and not options.no_plots
-    result = run_experiment(regressor_cfg, make_plots=make_plots)
+    result = run_experiment(regressor_cfg, make_plots=make_plots, samples=samples)
     print(f"Saved regressor results to {result['output_dir']}")
     print(result["results"].to_string(index=False))
 
@@ -389,6 +407,7 @@ def run_pipeline(
     cfg: dict[str, Any],
     base_dir: Path | str | None = None,
     options: PipelineOptions | argparse.Namespace | None = None,
+    samples: list[dict[str, Any]] | None = None,
 ) -> None:
     if options is None:
         options = PipelineOptions()
@@ -398,6 +417,16 @@ def run_pipeline(
     base_path = Path.cwd() if base_dir is None else Path(base_dir)
     selected = set(options.only_section or SECTION_ORDER)
     skipped = set(options.skip_section or [])
+    active = selected - skipped
+
+    if samples is None and active.intersection({"references", "features", "statistics", "regressors"}):
+        from qualisr.datasets import load_datasets
+
+        dataset_entries = cfg.get("datasets")
+        if dataset_entries is not None:
+            if not isinstance(dataset_entries, list):
+                raise ValueError("datasets must be a list")
+            samples = load_datasets(dataset_entries, base_dir=base_path)
 
     for section_name in SECTION_ORDER:
         if section_name not in selected or section_name in skipped:
@@ -407,16 +436,25 @@ def run_pipeline(
             continue
 
         if section_name == "references":
-            run_references(section_cfg)
+            if samples is None:
+                run_references(section_cfg)
+            else:
+                run_references_for_samples(section_cfg, samples)
         elif section_name == "features":
-            run_features(section_cfg)
+            run_features(section_cfg, samples=samples)
         elif section_name == "pca":
             run_pca(section_cfg)
         elif section_name == "statistics":
-            run_statistics(section_cfg)
+            run_statistics(section_cfg, samples=samples)
         elif section_name == "regressors":
             features_cfg = cfg.get("features", {})
-            run_regressors_section(section_cfg, base_path, options, features_cfg=features_cfg)
+            run_regressors_section(
+                section_cfg,
+                base_path,
+                options,
+                features_cfg=features_cfg,
+                samples=samples,
+            )
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

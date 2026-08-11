@@ -9,6 +9,7 @@ import os
 import re
 import time
 import warnings
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from fnmatch import fnmatch
 from functools import reduce
@@ -116,11 +117,7 @@ def configured_pretty_names(cfg: dict[str, Any] | None = None) -> dict[str, str]
         if isinstance(section_names, dict):
             names.update({str(key): str(value) for key, value in section_names.items()})
 
-    flat_names = {
-        str(key): str(value)
-        for key, value in pretty_cfg.items()
-        if isinstance(value, str)
-    }
+    flat_names = {str(key): str(value) for key, value in pretty_cfg.items() if isinstance(value, str)}
     names.update(flat_names)
     return names
 
@@ -312,7 +309,20 @@ def sample_name_from_label_row(row: pd.Series, cfg: dict[str, Any], image_col: s
     return sample_name_from_label_parts(row, cfg)
 
 
-def load_scores(cfg: dict[str, Any]) -> pd.DataFrame:
+def load_scores(
+    cfg: dict[str, Any],
+    samples: Sequence[Mapping[str, Any]] | None = None,
+) -> pd.DataFrame:
+    if samples is not None:
+        name_col = cfg["dataset"]["name_column"]
+        score_col = cfg["dataset"]["score_column"]
+        return pd.DataFrame(
+            {
+                name_col: [str(sample["sample_id"]) for sample in samples],
+                score_col: [float(sample["score"]) for sample in samples],
+            }
+        )
+
     labels_path = cfg["paths"].get("labels")
     if labels_path is None:
         raise KeyError("Config must define paths.labels")
@@ -338,7 +348,9 @@ def load_scores(cfg: dict[str, Any]) -> pd.DataFrame:
                     axis=1,
                 )
             except ValueError as exc:
-                raise ValueError(f"Could not derive sample names from labels file '{labels_path}': {exc}") from exc
+                raise ValueError(
+                    f"Could not derive sample names from labels file '{labels_path}': {exc}"
+                ) from exc
 
     if score_col not in scores.columns:
         fallback = [c for c in ["score", "scores", "mos", "mos_norm", "score_norm"] if c in scores.columns]
@@ -358,12 +370,28 @@ def build_sample_name(df: pd.DataFrame, cfg: dict[str, Any]) -> pd.Series:
 
     if method_col not in df.columns or filename_col not in df.columns:
         raise ValueError(
-            f"Feature file must have '{method_col}' and '{filename_col}' columns. "
-            f"Got: {df.columns.tolist()}"
+            f"Feature file must have '{method_col}' and '{filename_col}' columns. Got: {df.columns.tolist()}"
         )
 
     stem = df[filename_col].astype(str).str.rsplit(".", n=1).str[0]
     return df[method_col].astype(str) + "/" + stem + suffix
+
+
+def align_sample_names(names: pd.Series, valid_names: set[str]) -> pd.Series:
+    """Align legacy method/filename names with dataset-prefixed sample IDs."""
+
+    aligned: list[str] = []
+    for value in names.astype(str):
+        if value in valid_names:
+            aligned.append(value)
+            continue
+        matches = [candidate for candidate in valid_names if candidate.endswith(f"/{value}")]
+        if len(matches) > 1:
+            raise ValueError(
+                f"Sample name '{value}' is ambiguous across configured datasets: {sorted(matches)}"
+            )
+        aligned.append(matches[0] if matches else value)
+    return pd.Series(aligned, index=names.index)
 
 
 def resolve_feature_path(feat_name: str, cfg: dict[str, Any]) -> Path:
@@ -410,7 +438,11 @@ def load_feature_block(feat_name: str, cfg: dict[str, Any], valid_names: set[str
         raise FileNotFoundError(f"Feature file for '{feat_name}' not found: {path}")
 
     df = pd.read_csv(path)
-    df["name"] = build_sample_name(df, cfg)
+    if "sample_id" in df.columns and set(df["sample_id"].astype(str)).intersection(valid_names):
+        df["name"] = df["sample_id"].astype(str)
+    else:
+        df["name"] = build_sample_name(df, cfg)
+    df["name"] = align_sample_names(df["name"], valid_names)
 
     drop_candidates = cfg["dataset"]["metadata_drop"]
     drop_existing = [c for c in drop_candidates if c in df.columns]
@@ -429,6 +461,7 @@ def load_stats_block(cfg: dict[str, Any], valid_names: set[str]) -> pd.DataFrame
         raise FileNotFoundError(f"Stats file not found: {stats_path}")
 
     stats = pd.read_csv(stats_path)
+    stats["name"] = align_sample_names(stats["name"], valid_names)
     requested = ["name"] + cfg["features"]["stats_columns"]
     missing = [c for c in requested if c not in stats.columns]
     if missing:
@@ -438,8 +471,11 @@ def load_stats_block(cfg: dict[str, Any], valid_names: set[str]) -> pd.DataFrame
     return stats[stats["name"].isin(valid_names)].copy()
 
 
-def build_dataset(cfg: dict[str, Any]) -> pd.DataFrame:
-    scores = load_scores(cfg)
+def build_dataset(
+    cfg: dict[str, Any],
+    samples: Sequence[Mapping[str, Any]] | None = None,
+) -> pd.DataFrame:
+    scores = load_scores(cfg, samples=samples)
     valid_names = set(scores[cfg["dataset"]["name_column"]].tolist())
 
     frames = [scores]
@@ -508,6 +544,7 @@ def load_metric_comparison_values(
     column = metric_comparison_column(item)
     values = pd.read_csv(path)
     values["name"] = build_sample_name(values, cfg)
+    values["name"] = align_sample_names(values["name"], set(target_names.astype(str)))
     if column not in values.columns:
         raise ValueError(
             f"Correlation metric column '{column}' not found in {path}. "
@@ -667,11 +704,7 @@ def infer_feature_categories_from_pipeline_config(cfg: dict[str, Any]) -> dict[s
             for spec in _config_list(timm_encoders):
                 categories["timm_prefixes"].append(spec.split("=", 1)[0].strip())
 
-    return {
-        key: sorted(set(value), key=str.lower)
-        for key, value in categories.items()
-        if value
-    }
+    return {key: sorted(set(value), key=str.lower) for key, value in categories.items() if value}
 
 
 def configured_feature_categories(cfg: dict[str, Any] | None = None) -> dict[str, list[str]]:
@@ -707,10 +740,7 @@ def feature_family(feature_name: str, cfg: dict[str, Any] | None = None) -> str:
         return "NR"
     if any(feature == prefix or feature.startswith(prefix + "_") for prefix in timm_prefixes):
         return "Timm"
-    if any(
-        feature == metric or feature.startswith(metric + "_")
-        for metric in fr_metrics
-    ):
+    if any(feature == metric or feature.startswith(metric + "_") for metric in fr_metrics):
         return "FR"
     if feature.startswith("vgg_"):
         return "VGG"
@@ -796,7 +826,9 @@ def save_plot(fig: plt.Figure, out_path: Path, cfg: dict[str, Any]) -> None:
         fig.savefig(out_path.with_suffix(".svg"), **savefig_kwargs)
 
 
-def model_params(cfg: dict[str, Any], model_name: str, defaults: dict[str, Any] | None = None) -> dict[str, Any]:
+def model_params(
+    cfg: dict[str, Any], model_name: str, defaults: dict[str, Any] | None = None
+) -> dict[str, Any]:
     params = dict(defaults or {})
     params.update(cfg["models"].get(model_name, {}).get("params", {}))
     return params
@@ -1031,13 +1063,14 @@ def _xgboost_shap_values(model: Any, X_test: pd.DataFrame) -> np.ndarray:
     dmatrix = xgb.DMatrix(X_test, feature_names=list(X_test.columns))
     contributions = np.asarray(booster.predict(dmatrix, pred_contribs=True), dtype=float)
     if contributions.ndim == 3:
-        contributions = contributions[:, :, 0] if contributions.shape[2] == 1 else np.mean(contributions, axis=2)
+        contributions = (
+            contributions[:, :, 0] if contributions.shape[2] == 1 else np.mean(contributions, axis=2)
+        )
 
     expected_shape = (X_test.shape[0], X_test.shape[1] + 1)
     if contributions.shape != expected_shape:
         raise ValueError(
-            "Unexpected XGBoost SHAP contribution shape: "
-            f"{contributions.shape}; expected {expected_shape}"
+            f"Unexpected XGBoost SHAP contribution shape: {contributions.shape}; expected {expected_shape}"
         )
 
     return contributions[:, :-1]
@@ -1196,7 +1229,7 @@ def plot_all_importances(
         for ax, (_, _), image in zip(axes_flat, valid, images, strict=False):
             ax.imshow(image)
             ax.axis("off")
-        for ax in axes_flat[len(images):]:
+        for ax in axes_flat[len(images) :]:
             ax.axis("off")
 
         palette = importance_palette()
@@ -1240,7 +1273,7 @@ def plot_all_shap_importances(
         for ax, (_, _), image in zip(axes_flat, valid, images, strict=False):
             ax.imshow(image)
             ax.axis("off")
-        for ax in axes_flat[len(images):]:
+        for ax in axes_flat[len(images) :]:
             ax.axis("off")
 
         palette = importance_palette()
@@ -1499,7 +1532,9 @@ def plot_feature_cross_correlation_matrix(
 
     n_features = len(cross_correlations)
     default_size = min(max(7.0, 0.34 * n_features), 24.0)
-    figsize = tuple(cfg.get("plot", {}).get("feature_correlation_matrix_figsize", [default_size, default_size]))
+    figsize = tuple(
+        cfg.get("plot", {}).get("feature_correlation_matrix_figsize", [default_size, default_size])
+    )
     label_limit = int(cfg.get("plot", {}).get("max_feature_correlation_matrix_labels", 45))
     show_labels = n_features <= label_limit
     label_font_size = cfg.get("plot", {}).get(
@@ -1615,16 +1650,20 @@ def compute_feature_outliers(
     strongest_feature = z.abs().idxmax(axis=1)
 
     threshold = float(cfg.get("analysis", {}).get("outliers", {}).get("feature_z_threshold", 3.0))
-    return pd.DataFrame(
-        {
-            "name": names.reset_index(drop=True),
-            "max_abs_z": max_abs_z.reset_index(drop=True),
-            "mean_abs_z": mean_abs_z.reset_index(drop=True),
-            "euclidean_z": pd.Series(euclidean_z).reset_index(drop=True),
-            "strongest_feature": strongest_feature.reset_index(drop=True),
-            "is_outlier": max_abs_z.reset_index(drop=True) >= threshold,
-        }
-    ).sort_values("max_abs_z", ascending=False).reset_index(drop=True)
+    return (
+        pd.DataFrame(
+            {
+                "name": names.reset_index(drop=True),
+                "max_abs_z": max_abs_z.reset_index(drop=True),
+                "mean_abs_z": mean_abs_z.reset_index(drop=True),
+                "euclidean_z": pd.Series(euclidean_z).reset_index(drop=True),
+                "strongest_feature": strongest_feature.reset_index(drop=True),
+                "is_outlier": max_abs_z.reset_index(drop=True) >= threshold,
+            }
+        )
+        .sort_values("max_abs_z", ascending=False)
+        .reset_index(drop=True)
+    )
 
 
 def compute_prediction_outliers(predictions_by_model: dict[str, pd.DataFrame]) -> pd.DataFrame:
@@ -1671,7 +1710,9 @@ def plot_outlier_scores(
     default_height = max(5, 0.35 * len(plot_df))
 
     with plt.rc_context(plot_rc_params(cfg)):
-        fig, ax = plt.subplots(figsize=tuple(cfg.get("plot", {}).get("outlier_figsize", [10, default_height])))
+        fig, ax = plt.subplots(
+            figsize=tuple(cfg.get("plot", {}).get("outlier_figsize", [10, default_height]))
+        )
         ax.barh(np.arange(len(plot_df)), plot_df[score_column], color="#536dfe")
         ax.set_yticks(np.arange(len(plot_df)))
         ax.set_yticklabels(labels)
@@ -1815,7 +1856,9 @@ def compute_feature_analysis_metrics(
     return rows.sort_values("rank_score", ascending=False).reset_index(drop=True)
 
 
-def plot_feature_analysis_metrics(metrics_df: pd.DataFrame, out_dir: Path, cfg: dict[str, Any]) -> Path | None:
+def plot_feature_analysis_metrics(
+    metrics_df: pd.DataFrame, out_dir: Path, cfg: dict[str, Any]
+) -> Path | None:
     if metrics_df.empty:
         return None
 
@@ -1828,7 +1871,9 @@ def plot_feature_analysis_metrics(metrics_df: pd.DataFrame, out_dir: Path, cfg: 
     default_height = max(6, 0.35 * len(plot_df))
 
     with plt.rc_context(plot_rc_params(cfg)):
-        fig, ax = plt.subplots(figsize=tuple(cfg.get("plot", {}).get("feature_metric_figsize", [10, default_height])))
+        fig, ax = plt.subplots(
+            figsize=tuple(cfg.get("plot", {}).get("feature_metric_figsize", [10, default_height]))
+        )
         ax.barh(np.arange(len(plot_df)), plot_df[rank_by], color="#0077b6")
         ax.set_yticks(np.arange(len(plot_df)))
         ax.set_yticklabels(plot_df["pretty_feature"].tolist())
@@ -2045,10 +2090,14 @@ def save_feature_selection_analysis(
     }
 
 
-def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, Any]:
+def run_experiment(
+    cfg: dict[str, Any],
+    make_plots: bool = True,
+    samples: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
     np.random.seed(cfg["seed"])
 
-    dataset = build_dataset(cfg)
+    dataset = build_dataset(cfg, samples=samples)
     X_train, X_test, y_train, y_test = split_dataset(dataset, cfg)
 
     try:
@@ -2203,7 +2252,9 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
                 cfg,
             )
         if plot_enabled(cfg, "prediction_scatter"):
-            prediction_scatter_path = plot_prediction_scatter(predictions_by_model, output_dirs["predictions"], cfg)
+            prediction_scatter_path = plot_prediction_scatter(
+                predictions_by_model, output_dirs["predictions"], cfg
+            )
         if "source" in results_df.columns:
             without_metrics = results_df[results_df["source"] != "metric"].copy()
         else:
@@ -2245,7 +2296,9 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
         "regressor_total_profile_path": (
             str(regressor_total_profile_path) if regressor_total_profile_path else None
         ),
-        "feature_profile_summary_path": str(feature_profile_summary_path) if feature_profile_summary_path else None,
+        "feature_profile_summary_path": str(feature_profile_summary_path)
+        if feature_profile_summary_path
+        else None,
     }
 
 
@@ -2387,6 +2440,27 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
     raise FileNotFoundError(f"Regressor config not found: {path}")
 
 
+def load_config_with_samples(path: Path | None = None) -> tuple[dict[str, Any], list[dict[str, Any]] | None]:
+    """Load a regressor config and any datasets declared by a unified pipeline config."""
+
+    cfg = load_config(path)
+    if path is None:
+        return cfg, None
+
+    with open(path, encoding="utf-8") as handle:
+        pipeline_cfg = json.load(handle)
+    dataset_entries = pipeline_cfg.get("datasets")
+    if dataset_entries is None:
+        return cfg, None
+    if not isinstance(dataset_entries, list):
+        raise ValueError("datasets must be a list")
+
+    from qualisr.datasets import load_datasets
+
+    samples = load_datasets(dataset_entries, base_dir=config_file_base_dir(path))
+    return cfg, samples
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run configured QualiSR-Lab regressor experiments.")
     parser.add_argument(
@@ -2433,7 +2507,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    cfg = load_config(Path(args.config) if args.config is not None else None)
+    cfg, samples = load_config_with_samples(Path(args.config) if args.config is not None else None)
 
     overrides: dict[str, Any] = {}
     if args.experiment_name is not None:
@@ -2458,7 +2532,7 @@ def main(argv: list[str] | None = None) -> None:
     if overrides:
         cfg = deep_update(cfg, overrides)
 
-    result = run_experiment(cfg, make_plots=not args.no_plots)
+    result = run_experiment(cfg, make_plots=not args.no_plots, samples=samples)
     print(f"Saved results to {result['output_dir']}")
     print(result["results"].to_string(index=False))
 

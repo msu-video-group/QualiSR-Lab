@@ -44,6 +44,7 @@ def run_regressor_experiment(
     config_path: str | Path | None = None,
     make_plots: bool = True,
     overrides: dict[str, Any] | None = None,
+    samples: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Run a regressor experiment from a config object or config path.
 
@@ -59,12 +60,19 @@ def run_regressor_experiment(
     overrides:
         Optional nested config updates applied before running.
     """
-    from qualisr.regressors import deep_update, run_experiment
+    from qualisr.regressors import deep_update, load_config_with_samples, run_experiment
 
-    cfg = deepcopy(config) if config is not None else load_regressor_config(config_path)
+    if config is not None:
+        cfg = deepcopy(config)
+    elif config_path is not None:
+        cfg, configured_samples = load_config_with_samples(Path(config_path))
+        if samples is None:
+            samples = configured_samples
+    else:
+        cfg = load_regressor_config()
     if overrides:
         cfg = deep_update(cfg, overrides)
-    return run_experiment(cfg, make_plots=make_plots)
+    return run_experiment(cfg, make_plots=make_plots, samples=samples)
 
 
 def run_pipeline_config(
@@ -79,6 +87,7 @@ def run_pipeline_config(
     plots_root: str | None = None,
     no_plots: bool = False,
     save_svg: bool = False,
+    samples: list[dict[str, Any]] | None = None,
 ) -> None:
     """Run the unified pipeline from a config object or config path."""
     from qualisr.pipeline import run_pipeline
@@ -93,7 +102,12 @@ def run_pipeline_config(
         no_plots=no_plots,
         save_svg=save_svg,
     )
-    run_pipeline(cfg, base_dir=base_dir or config_base_dir(path), options=run_options)
+    run_pipeline(
+        cfg,
+        base_dir=base_dir or config_base_dir(path),
+        options=run_options,
+        samples=samples,
+    )
 
 
 def run_pipeline(

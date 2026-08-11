@@ -95,7 +95,7 @@ python -m pip install "qualisr-lab[features,regressors]"
 
 The legacy fully pinned environment is kept in `requirements.txt`.
 
-See [dataset/readme.md](dataset/readme.md) for dataset download notes.
+See [dataset/readme.md](dataset/readme.md) for dataset download notes and the parser/sample interface for custom datasets.
 
 ---
 
@@ -115,10 +115,15 @@ print(result["results"])
 For the unified pipeline:
 
 ```python
-from qualisr import PipelineOptions, load_pipeline_config, run_pipeline
+from qualisr import PipelineOptions, load_datasets, load_pipeline_config, run_pipeline
 
 cfg = load_pipeline_config()
-run_pipeline(cfg, options=PipelineOptions(only_section=["regressors"], no_plots=True))
+samples = load_datasets(cfg["datasets"])
+run_pipeline(
+    cfg,
+    samples=samples,
+    options=PipelineOptions(only_section=["regressors"], no_plots=True),
+)
 ```
 
 Implementation modules such as `qualisr.regressors`, `qualisr.features`, and
@@ -147,7 +152,9 @@ The script writes feature-group CSVs such as `features/fr.csv`, `features/nr.csv
 
 ## 🚀 Workflow
 
-You may either launch the whole pipeline in a single command with your JSON config as in previous section or do each step separately:
+You may either launch the whole pipeline in a single command with your JSON config as in the previous section or do each step separately. The unified pipeline parses the configured `datasets` entries into one shared sample list; datasets may use a bundled parser, a parser function from a user Python file, or explicit labels/image directories. Multiple entries are combined in one run. See [dataset/readme.md](dataset/readme.md) for the complete contract.
+
+The standalone commands below retain their directory-based arguments for focused use outside the unified pipeline.
 
 ### Step 0 (optional): Prepare reference images
 
