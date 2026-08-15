@@ -20,7 +20,7 @@ __all__ = [
 
 
 def load_regressor_config(path: str | Path | None = None) -> dict[str, Any]:
-    """Load a regressor config from a path or from the packaged default."""
+    """Load a regressor config or the packaged sample experiment."""
     from qualisr.regressors import load_config
 
     return load_config(Path(path) if path is not None else None)
@@ -42,6 +42,7 @@ def run_regressor_experiment(
     config: dict[str, Any] | None = None,
     *,
     config_path: str | Path | None = None,
+    base_dir: str | Path | None = None,
     make_plots: bool = True,
     overrides: dict[str, Any] | None = None,
     samples: list[dict[str, Any]] | None = None,
@@ -51,28 +52,50 @@ def run_regressor_experiment(
     Parameters
     ----------
     config:
-        Already loaded regressor config. If omitted, ``config_path`` or the
-        packaged default config is used.
+        Already loaded unified pipeline or regressor config.
     config_path:
-        Optional path to a regressor or unified pipeline JSON config.
+        Optional path to a unified pipeline or regressor JSON config. If both
+        config arguments are omitted, the packaged sample experiment is used.
     make_plots:
         Whether to generate configured plots.
     overrides:
         Optional nested config updates applied before running.
     """
-    from qualisr.regressors import deep_update, load_config_with_samples, run_experiment
+    from qualisr.datasets import load_datasets
+    from qualisr.regressors import (
+        deep_update,
+        extract_regressor_config,
+        load_config,
+        load_config_with_samples,
+        resolve_regressor_config_paths,
+        run_experiment,
+    )
 
-    if config is not None:
-        cfg = deepcopy(config)
-    elif config_path is not None:
-        cfg, configured_samples = load_config_with_samples(Path(config_path))
+    if config is not None and config_path is not None:
+        raise ValueError("Specify config or config_path, not both")
+    if config_path is not None:
         if samples is None:
+            cfg, configured_samples = load_config_with_samples(Path(config_path))
             samples = configured_samples
+        else:
+            cfg = load_config(Path(config_path))
+    elif config is not None:
+        pipeline_cfg = deepcopy(config)
+        config_root = Path.cwd() if base_dir is None else Path(base_dir)
+        cfg = resolve_regressor_config_paths(
+            extract_regressor_config(pipeline_cfg),
+            config_root,
+        )
+        if samples is None:
+            dataset_entries = pipeline_cfg.get("datasets")
+            if not isinstance(dataset_entries, list):
+                raise ValueError("Config without explicit samples must define datasets as a list")
+            samples = load_datasets(dataset_entries, base_dir=config_root)
     else:
-        cfg = load_regressor_config()
+        cfg, samples = load_config_with_samples()
     if overrides:
         cfg = deep_update(cfg, overrides)
-    return run_experiment(cfg, make_plots=make_plots, samples=samples)
+    return run_experiment(cfg, samples=samples, make_plots=make_plots)
 
 
 def run_pipeline_config(

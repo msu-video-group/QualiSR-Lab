@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -22,16 +23,21 @@ def is_regressor_profiling_enabled(cfg: dict[str, Any]) -> bool:
     return bool(profile_cfg.get("regressors", False))
 
 
-def resolve_profile_template_path(path_template: str, cfg: dict[str, Any], run_name: str | None = None) -> Path:
-    return Path(
-        path_template.format(
-            features_root=cfg["paths"]["features_root"],
-            plots_root=cfg["paths"]["plots_root"],
-            experiment_name=cfg["experiment_name"],
-            run_name=run_name or cfg["experiment_name"],
-            pca_n=cfg["features"].get("pca_n", 0),
-        )
-    )
+def resolve_profile_template_path(
+    path_template: str,
+    cfg: dict[str, Any],
+    run_name: str | None = None,
+    features_root: str | Path | None = None,
+) -> Path:
+    values = {
+        "plots_root": cfg["paths"]["plots_root"],
+        "experiment_name": cfg["experiment_name"],
+        "run_name": run_name or cfg["experiment_name"],
+        "pca_n": cfg["features"].get("pca_n", 0),
+    }
+    if features_root is not None:
+        values["features_root"] = str(features_root)
+    return Path(path_template.format(**values))
 
 
 def resolve_regressor_profile_path(cfg: dict[str, Any], out_dir: Path, run_name: str) -> Path:
@@ -321,32 +327,36 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
-def _resolve_feature_path(feat_name: str, cfg: dict[str, Any]) -> Path:
+def _resolve_feature_path(feat_name: str, cfg: dict[str, Any], features_root: str | Path) -> Path:
     templates = cfg["features"]["feature_files"]
     if feat_name not in templates:
         raise KeyError(f"No path template configured for feature '{feat_name}'")
 
     return Path(
         templates[feat_name].format(
-            features_root=cfg["paths"]["features_root"],
+            features_root=features_root,
             pca_n=cfg["features"].get("pca_n", 0),
         )
     )
 
 
-def infer_feature_profile_paths(feature_name: str, cfg: dict[str, Any]) -> list[Path]:
+def infer_feature_profile_paths(
+    feature_name: str,
+    cfg: dict[str, Any],
+    features_root: str | Path,
+) -> list[Path]:
     profile_cfg = cfg.get("profiling", {})
     paths: list[Path] = []
 
     for item in _as_list(profile_cfg.get("feature_profile_files")):
-        paths.append(resolve_profile_template_path(str(item), cfg))
+        paths.append(resolve_profile_template_path(str(item), cfg, features_root=features_root))
 
     configured_profiles = profile_cfg.get("feature_profiles", {})
     for item in _as_list(configured_profiles.get(feature_name)):
-        paths.append(resolve_profile_template_path(str(item), cfg))
+        paths.append(resolve_profile_template_path(str(item), cfg, features_root=features_root))
 
     try:
-        feature_path = _resolve_feature_path(feature_name, cfg)
+        feature_path = _resolve_feature_path(feature_name, cfg, features_root)
     except KeyError:
         feature_path = None
 
@@ -406,7 +416,11 @@ def count_profiled_input_features(feature_name: str, input_columns: set[str]) ->
     return len(matched)
 
 
-def load_feature_profile_summary(cfg: dict[str, Any], input_columns: pd.Index) -> pd.DataFrame:
+def load_feature_profile_summary(
+    cfg: dict[str, Any],
+    input_columns: pd.Index,
+    features_roots: Sequence[str | Path],
+) -> pd.DataFrame:
     feature_names = list(cfg["features"].get("include", []))
     if cfg["features"].get("include_stats", False):
         feature_names.append("stats")
@@ -414,33 +428,38 @@ def load_feature_profile_summary(cfg: dict[str, Any], input_columns: pd.Index) -
     input_column_set = set(map(str, input_columns))
     rows = []
     seen_profile_rows: set[tuple[Path, str]] = set()
-    for feature_name in feature_names:
-        for profile_path in infer_feature_profile_paths(feature_name, cfg):
-            profile = pd.read_csv(profile_path)
-            if "feature" not in profile.columns:
-                continue
-
-            for row in profile.to_dict("records"):
-                profile_feature = str(row["feature"])
-                key = (profile_path, profile_feature)
-                if key in seen_profile_rows or not feature_profile_matches_input(profile_feature, input_column_set):
+    for features_root in features_roots:
+        for feature_name in feature_names:
+            for profile_path in infer_feature_profile_paths(feature_name, cfg, features_root):
+                profile = pd.read_csv(profile_path)
+                if "feature" not in profile.columns:
                     continue
-                seen_profile_rows.add(key)
 
-                rows.append(
-                    {
-                        "profile_path": csv_path(profile_path),
-                        "profile_feature": profile_feature,
-                        "matched_input_features": count_profiled_input_features(profile_feature, input_column_set),
-                        "extractor_feature_count": _safe_float(row.get("feature_count")),
-                        "profile_samples": _safe_float(row.get("samples")),
-                        "mean_runtime_sec": _safe_float(row.get("mean_runtime_sec")),
-                        "total_runtime_sec": _safe_float(row.get("total_runtime_sec")),
-                        "mean_flops": _safe_float(row.get("mean_flops")),
-                        "total_profiled_flops": _safe_float(row.get("total_profiled_flops")),
-                        "flops_profiled_samples": _safe_float(row.get("flops_profiled_samples")),
-                    }
-                )
+                for row in profile.to_dict("records"):
+                    profile_feature = str(row["feature"])
+                    key = (profile_path, profile_feature)
+                    if key in seen_profile_rows or not feature_profile_matches_input(
+                        profile_feature, input_column_set
+                    ):
+                        continue
+                    seen_profile_rows.add(key)
+
+                    rows.append(
+                        {
+                            "profile_path": csv_path(profile_path),
+                            "profile_feature": profile_feature,
+                            "matched_input_features": count_profiled_input_features(
+                                profile_feature, input_column_set
+                            ),
+                            "extractor_feature_count": _safe_float(row.get("feature_count")),
+                            "profile_samples": _safe_float(row.get("samples")),
+                            "mean_runtime_sec": _safe_float(row.get("mean_runtime_sec")),
+                            "total_runtime_sec": _safe_float(row.get("total_runtime_sec")),
+                            "mean_flops": _safe_float(row.get("mean_flops")),
+                            "total_profiled_flops": _safe_float(row.get("total_profiled_flops")),
+                            "flops_profiled_samples": _safe_float(row.get("flops_profiled_samples")),
+                        }
+                    )
 
     return pd.DataFrame(rows)
 

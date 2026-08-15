@@ -15,7 +15,7 @@ COPY pyproject.toml README.md LICENSE THIRD_PARTY_NOTICES.md ./
 COPY qualisr ./qualisr
 COPY configs ./configs
 COPY features ./features
-COPY dataset/labels.csv ./dataset/labels.csv
+COPY dataset ./dataset
 COPY realtime_sr ./realtime_sr
 
 RUN python -m pip install --upgrade pip \

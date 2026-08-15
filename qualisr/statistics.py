@@ -240,7 +240,7 @@ def format_area_name(threshold: float) -> str:
 
 
 def compute_statistics_row(
-    name: str,
+    sample_id: str,
     heatmap: np.ndarray,
     percentiles: Sequence[float],
     area_thresholds: Sequence[float],
@@ -248,7 +248,7 @@ def compute_statistics_row(
 ) -> dict[str, float]:
     size = heatmap.size
     row: dict[str, float] = {
-        "name": name,
+        "sample_id": sample_id,
         "min": float(timed_stat(profiler, "min", lambda: np.min(heatmap), flops=max(size - 1, 0))),
         "max": float(timed_stat(profiler, "max", lambda: np.max(heatmap), flops=max(size - 1, 0))),
         "mean": float(timed_stat(profiler, "mean", lambda: np.mean(heatmap), flops=size)),
@@ -288,7 +288,7 @@ def compute_statistics_row(
 
 
 def build_output_columns(percentiles: Sequence[float], area_thresholds: Sequence[float]) -> list[str]:
-    base_cols = ["name", "min", "max", "mean", "median", "std"]
+    base_cols = ["sample_id", "min", "max", "mean", "median", "std"]
     percentile_cols = [format_percentile_name(p) for p in percentiles]
     area_cols = [format_area_name(t) for t in area_thresholds]
     return base_cols + percentile_cols + area_cols
@@ -349,7 +349,7 @@ def main(
 
         try:
             row = compute_statistics_row(
-                name=sample_name,
+                sample_id=sample_name,
                 heatmap=heatmap,
                 percentiles=percentiles,
                 area_thresholds=area_thresholds,
@@ -366,7 +366,7 @@ def main(
 
     columns = build_output_columns(percentiles, area_thresholds)
     output_df = pd.DataFrame(rows, columns=columns)
-    output_df.sort_values("name", inplace=True)
+    output_df.sort_values("sample_id", inplace=True)
 
     output_path = Path(args.output).expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)

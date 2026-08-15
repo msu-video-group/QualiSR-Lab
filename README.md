@@ -45,11 +45,14 @@ qualisr-run-regressors
 ```
 
 From a cloned repository, you can also run against the editable root
-`configs/`, `scores/`, and `features/` files explicitly:
+`configs/`, `dataset/`, and `features/` files explicitly:
 
 ```bash
-qualisr-run-regressors --config configs/default.json
+qualisr-run-regressors --config configs/pipeline.json
 ```
+
+Downloading QualiSR-Set120 is optional for this regressor smoke test and is
+only needed to reproduce feature extraction or the full unified pipeline.
 
 Or build Docker image:
 
@@ -63,7 +66,7 @@ You can run any of the following commands inside the Docker container:
 ```bash
 docker run --rm -it --mount type=bind,source="${PWD}",target=/workspace qualisr-lab bash
 qualisr --help
-qualisr-run-regressors --config configs/default.json
+qualisr-run-regressors
 
 ```
 
@@ -105,10 +108,9 @@ The CLI remains the recommended way to run full experiments, but installed
 packages also expose a small stable API:
 
 ```python
-from qualisr import load_regressor_config, run_regressor_experiment
+from qualisr import run_regressor_experiment
 
-cfg = load_regressor_config()
-result = run_regressor_experiment(cfg, make_plots=False)
+result = run_regressor_experiment(make_plots=False)
 print(result["results"])
 ```
 
@@ -293,8 +295,12 @@ Add `--profile` to save `<output_stem>_profile.csv` with mean runtime and simple
 Train regressors and produce summary on feature importances and correlations. The correlation plot can also include direct NR/FR metric baselines from feature CSV files.
 
 ```bash
-qualisr-run-regressors --config configs/default.json
+qualisr-run-regressors --config configs/pipeline.json
 ```
+
+Training and validation datasets, their split behavior, and their feature
+roots are declared once in the top-level `datasets` list. See
+[dataset/readme.md](dataset/readme.md#selecting-datasets).
 
 Add `--profile` to save `regressor_profile.csv` with train/predict runtime and estimated prediction FLOPs for tree regressors. If feature profile CSVs are available, pass them with `--feature-profile-files` or configure `profiling.feature_profile_files`; the pipeline also saves `regressor_total_profile.csv` with summed feature + regressor runtime/FLOPs.
 

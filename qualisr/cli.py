@@ -47,38 +47,7 @@ def run_pipeline_main() -> None:
     _run_module_main("qualisr.pipeline")
 
 
-def _print_run_regressors_help() -> None:
-    print(
-        "usage: qualisr-run-regressors [-h] [--config CONFIG] "
-        "[--experiment-name EXPERIMENT_NAME] [--plots-root PLOTS_ROOT] "
-        "[--no-plots] [--save-svg] [--profile] [--profile-output PROFILE_OUTPUT] "
-        "[--profile-total-output PROFILE_TOTAL_OUTPUT] "
-        "[--feature-profile-files FEATURE_PROFILE_FILES ...]\n\n"
-        "Run configured QualiSR-Lab regressor experiments.\n\n"
-        "options:\n"
-        "  -h, --help            show this help message and exit\n"
-        "  --config CONFIG       Path to experiment JSON config.\n"
-        "  --experiment-name EXPERIMENT_NAME\n"
-        "                        Override config experiment_name.\n"
-        "  --plots-root PLOTS_ROOT\n"
-        "                        Override config paths.plots_root.\n"
-        "  --no-plots            Skip plot generation.\n"
-        "  --save-svg            Also save generated plots in SVG format.\n"
-        "  --profile             Measure regressor runtime/FLOPs and save a profile CSV.\n"
-        "  --profile-output PROFILE_OUTPUT\n"
-        "                        Output CSV path for regressor profile; implies --profile.\n"
-        "  --profile-total-output PROFILE_TOTAL_OUTPUT\n"
-        "                        Output CSV path for feature+regressor totals.\n"
-        "  --feature-profile-files FEATURE_PROFILE_FILES ...\n"
-        "                        Feature profile CSV files to aggregate into regressor totals."
-    )
-
-
 def run_regressors_main() -> None:
-    if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
-        _print_run_regressors_help()
-        return
-
     from qualisr.regressors import main
 
     main()
@@ -105,10 +74,6 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     command, command_args = args[0], args[1:]
     if command == "run-regressors":
-        if any(arg in {"-h", "--help"} for arg in command_args):
-            _print_run_regressors_help()
-            return
-
         from qualisr.regressors import main as regressors_main
 
         regressors_main(command_args)

@@ -69,6 +69,21 @@ def deep_update(base: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]
     return result
 
 
+def expand_features_root(value: Any, features_root: str) -> Any:
+    if isinstance(value, str):
+        return value.replace("{features_root}", features_root)
+    if isinstance(value, dict):
+        return {key: expand_features_root(item, features_root) for key, item in value.items()}
+    if isinstance(value, list):
+        return [expand_features_root(item, features_root) for item in value]
+    return value
+
+
+def dataset_sample_groups(samples: Sequence[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    names = sorted({str(sample["dataset"]) for sample in samples})
+    return [[sample for sample in samples if str(sample["dataset"]) == name] for name in names]
+
+
 def section_enabled(cfg: Mapping[str, Any], default: bool = False) -> bool:
     return bool(cfg.get("enabled", default))
 
@@ -420,9 +435,18 @@ def run_regressors_section(
     features_cfg: Mapping[str, Any] | None = None,
     samples: list[dict[str, Any]] | None = None,
 ) -> None:
-    from qualisr.regressors import extract_regressor_config, run_experiment
+    from qualisr.regressors import (
+        extract_regressor_config,
+        resolve_regressor_config_paths,
+        run_experiment,
+    )
 
-    regressor_cfg = extract_regressor_config({"regressors": dict(cfg)}, base_dir)
+    if samples is None:
+        raise ValueError("regressors requires configured datasets")
+    regressor_cfg = resolve_regressor_config_paths(
+        extract_regressor_config({"regressors": dict(cfg)}),
+        base_dir,
+    )
     inferred_categories = collect_feature_categories(features_cfg)
     if inferred_categories:
         regressor_cfg = deep_update(
@@ -473,7 +497,7 @@ def run_pipeline(
     skipped = set(options.skip_section or [])
     active = selected - skipped
 
-    if samples is None and active.intersection({"references", "features", "statistics", "regressors"}):
+    if samples is None and active.intersection(SECTION_ORDER):
         from qualisr.datasets import load_datasets
 
         dataset_entries = cfg.get("datasets")
@@ -495,13 +519,37 @@ def run_pipeline(
             else:
                 run_references_for_samples(section_cfg, samples)
         elif section_name == "features":
-            run_features(section_cfg, samples=samples)
+            if samples is None:
+                run_features(section_cfg)
+            else:
+                for group in dataset_sample_groups(samples):
+                    run_features(
+                        expand_features_root(section_cfg, str(group[0]["features_root"])),
+                        samples=group,
+                    )
         elif section_name == "pca":
-            run_pca(section_cfg)
+            if samples is None:
+                run_pca(section_cfg)
+            else:
+                for group in dataset_sample_groups(samples):
+                    run_pca(expand_features_root(section_cfg, str(group[0]["features_root"])))
         elif section_name == "embedding_difference":
-            run_embedding_difference(section_cfg)
+            if samples is None:
+                run_embedding_difference(section_cfg)
+            else:
+                for group in dataset_sample_groups(samples):
+                    run_embedding_difference(
+                        expand_features_root(section_cfg, str(group[0]["features_root"]))
+                    )
         elif section_name == "statistics":
-            run_statistics(section_cfg, samples=samples)
+            if samples is None:
+                run_statistics(section_cfg)
+            else:
+                for group in dataset_sample_groups(samples):
+                    run_statistics(
+                        expand_features_root(section_cfg, str(group[0]["features_root"])),
+                        samples=group,
+                    )
         elif section_name == "regressors":
             features_cfg = cfg.get("features", {})
             run_regressors_section(

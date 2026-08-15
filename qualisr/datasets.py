@@ -1558,7 +1558,30 @@ def load_dataset(entry: Mapping[str, Any], base_dir: str | Path | None = None) -
     if not name:
         raise ValueError("Each datasets entry must define a non-empty name")
     base_path = Path.cwd() if base_dir is None else Path(base_dir)
-    root = _resolve_config_path(str(entry.get("root", ".")), base_path)
+    if not entry.get("root"):
+        raise ValueError(f"Dataset '{name}' must define root")
+    root = _resolve_config_path(str(entry["root"]), base_path)
+    if not entry.get("features_root"):
+        raise ValueError(f"Dataset '{name}' must define features_root")
+    features_root = _resolve_config_path(str(entry["features_root"]), base_path)
+    if "regressors" not in entry:
+        raise ValueError(f"Dataset '{name}' must define regressors usage")
+    regressors = entry["regressors"]
+    if not isinstance(regressors, Mapping):
+        raise ValueError(f"Dataset '{name}' regressors must be an object")
+    for role in ("train", "validate"):
+        if not isinstance(regressors.get(role), bool):
+            raise ValueError(f"Dataset '{name}' regressors.{role} must be a boolean")
+    if regressors["train"]:
+        if "test_size" not in regressors:
+            raise ValueError(f"Training dataset '{name}' must define regressors.test_size")
+        test_size = float(regressors["test_size"])
+        if not 0.0 <= test_size < 1.0:
+            raise ValueError(f"Dataset '{name}' regressors.test_size must be in [0, 1)")
+        if not regressors["validate"] and test_size != 0.0:
+            raise ValueError(f"Training-only dataset '{name}' must set regressors.test_size to 0")
+    elif "test_size" in regressors:
+        raise ValueError(f"Non-training dataset '{name}' must not define regressors.test_size")
     kwargs = entry.get("kwargs", {}) or {}
     if not isinstance(kwargs, Mapping):
         raise ValueError(f"Dataset '{name}' kwargs must be an object")
@@ -1597,7 +1620,11 @@ def load_dataset(entry: Mapping[str, Any], base_dir: str | Path | None = None) -
         )
     if isinstance(parsed, (str, bytes)) or not isinstance(parsed, Sequence):
         raise TypeError(f"Dataset parser '{name}' must return a list of dictionaries")
-    return normalize_samples(parsed, dataset_name=name, root=root)
+    samples = normalize_samples(parsed, dataset_name=name, root=root)
+    for sample in samples:
+        sample["features_root"] = str(features_root)
+        sample["regressors"] = dict(regressors)
+    return samples
 
 
 def load_datasets(

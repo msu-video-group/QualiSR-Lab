@@ -9,7 +9,7 @@ set -euo pipefail
 #   DEVICE=cpu|cuda|auto
 #   PROFILE=1 PROFILE_FLOPS=1
 #   FEATURE_GROUPS="fr nr vgg resnet siglip"
-#   CONFIG=configs/default.json PLOTS_DIR=plots FEATURES_DIR=features
+#   CONFIG=configs/pipeline.json PLOTS_DIR=plots FEATURES_DIR=features
 
 PYTHON=${PYTHON:-python}
 DATASET_SOURCE=${DATASET_SOURCE:-hf}
@@ -20,7 +20,7 @@ DATASET_ARCHIVE=${DATASET_ARCHIVE:-}
 DATASET_DIR=${DATASET_DIR:-dataset}
 FEATURES_DIR=${FEATURES_DIR:-features}
 PLOTS_DIR=${PLOTS_DIR:-plots}
-CONFIG=${CONFIG:-configs/default.json}
+CONFIG=${CONFIG:-configs/pipeline.json}
 RUNTIME_CONFIG=${RUNTIME_CONFIG:-}
 DEVICE=${DEVICE:-auto}
 
@@ -37,8 +37,7 @@ SAVE_SVG=${SAVE_SVG:-0}
 
 QUALISR=("$PYTHON" -m qualisr.cli)
 DATASET_BASE="$DATASET_DIR"
-LABELS_CSV=""
-REGRESSOR_CONFIG=""
+PIPELINE_CONFIG=""
 
 run() {
   printf '\n+'
@@ -155,99 +154,32 @@ build_dataset_args() {
   done
 }
 
-prepare_labels() {
-  local labels_source=""
-  if [[ -f "$DATASET_BASE/labels.csv" ]]; then
-    labels_source="$DATASET_BASE/labels.csv"
-  elif [[ -f "$DATASET_DIR/labels.csv" ]]; then
-    labels_source="$DATASET_DIR/labels.csv"
-  elif [[ -f scores/labels.csv ]]; then
-    labels_source="scores/labels.csv"
-  else
-    echo "Missing labels CSV. Expected '$DATASET_BASE/labels.csv' or scores/labels.csv." >&2
-    exit 1
-  fi
-
-  mkdir -p scores
-  LABELS_CSV="scores/labels.csv"
-  if [[ "$labels_source" != "$LABELS_CSV" ]]; then
-    run cp "$labels_source" "$LABELS_CSV"
-  fi
-
-  run "$PYTHON" - "$LABELS_CSV" "$DATASET_BASE" <<'PY'
-from pathlib import Path
-import sys
-
-import pandas as pd
-
-labels_path = Path(sys.argv[1])
-dataset_base = Path(sys.argv[2])
-df = pd.read_csv(labels_path)
-
-if "image" not in df.columns:
-    df["image"] = ""
-
-method_map = {
-    "pasd": "PASD",
-    "supir": "SUPIR",
-    "realesrgan": "RealESRGAN",
-}
-
-def fill_image(row):
-    current = row.get("image")
-    if isinstance(current, str) and current.strip():
-        return current
-    method = method_map.get(str(row["method"]).lower(), str(row["method"]))
-    test_case = str(row["test_case"])
-    for ext in (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"):
-        candidate = dataset_base / "sr" / method / f"{test_case}{ext}"
-        if candidate.exists():
-            return candidate.relative_to(dataset_base).as_posix()
-    return f"sr/{method}/{test_case}.png"
-
-df["image"] = df.apply(fill_image, axis=1)
-df.to_csv(labels_path, index=False)
-PY
-}
-
-write_runtime_regressor_config() {
+write_runtime_pipeline_config() {
   mkdir -p "$PLOTS_DIR"
   if [[ -n "$RUNTIME_CONFIG" ]]; then
-    REGRESSOR_CONFIG="$RUNTIME_CONFIG"
+    PIPELINE_CONFIG="$RUNTIME_CONFIG"
   else
-    REGRESSOR_CONFIG="$PLOTS_DIR/reproduce_regressors_config.json"
+    PIPELINE_CONFIG="$PLOTS_DIR/reproduce_pipeline_config.json"
   fi
 
-  run "$PYTHON" - "$CONFIG" "$REGRESSOR_CONFIG" "$LABELS_CSV" "$FEATURES_DIR" "$PLOTS_DIR" <<'PY'
+  run "$PYTHON" - "$CONFIG" "$PIPELINE_CONFIG" "$DATASET_BASE" "$FEATURES_DIR" "$PLOTS_DIR" <<'PY'
 from pathlib import Path
 import json
 import sys
 
 src = Path(sys.argv[1])
 dst = Path(sys.argv[2])
-labels = sys.argv[3]
-features_root = sys.argv[4]
-plots_root = sys.argv[5]
+dataset_root = str(Path(sys.argv[3]).resolve())
+features_root = str(Path(sys.argv[4]).resolve())
+plots_root = str(Path(sys.argv[5]).resolve())
 
 cfg = json.loads(src.read_text())
-reg_cfg = cfg.get("regressors", {}).get("config") if isinstance(cfg.get("regressors"), dict) else cfg
-if not isinstance(reg_cfg, dict):
-    raise SystemExit(f"Could not find regressor config in {src}")
-
-paths = reg_cfg.setdefault("paths", {})
-paths.pop("raw_scores", None)
-paths.pop("scores", None)
-paths["labels"] = labels
-paths["features_root"] = features_root
-paths["plots_root"] = plots_root
-
-reg_cfg.pop("score_preparation", None)
-dataset = reg_cfg.setdefault("dataset", {})
-dataset.setdefault("image_column", "image")
-dataset["score_column"] = "score"
+cfg["datasets"][0]["root"] = dataset_root
+cfg["datasets"][0]["features_root"] = features_root
+cfg["regressors"]["config"]["paths"]["plots_root"] = plots_root
 
 dst.parent.mkdir(parents=True, exist_ok=True)
-dst.write_text(json.dumps(reg_cfg, indent=2) + "\n")
+dst.write_text(json.dumps(cfg, indent=2) + "\n")
 PY
 }
 
@@ -344,9 +276,9 @@ compute_stats() {
 
 run_regressors() {
   mkdir -p "$PLOTS_DIR"
-  write_runtime_regressor_config
+  write_runtime_pipeline_config
 
-  local -a REGRESSOR_ARGS=(--config "$REGRESSOR_CONFIG" --plots-root "$PLOTS_DIR")
+  local -a REGRESSOR_ARGS=(--config "$PIPELINE_CONFIG" --plots-root "$PLOTS_DIR")
   if [[ "$SAVE_SVG" == "1" ]]; then
     REGRESSOR_ARGS+=(--save-svg)
   fi
@@ -369,7 +301,6 @@ main() {
   download_dataset
   resolve_dataset_base
   build_dataset_args
-  prepare_labels
   maybe_make_references
   extract_features
   apply_pca

@@ -2,13 +2,24 @@
     "datasets": [
         {
             "name": "QualiSR-Set120",
-            "root": "dataset"
+            "root": "dataset",
+            "features_root": "features",
+            "regressors": {
+                "train": true,
+                "validate": true,
+                "test_size": 0.2
+            }
         }
     ],
     "_dataset_directory_example": {
         "_comment": "Optional alternative dataset entry using absolute directories; copy this object into datasets and adjust the paths.",
         "name": "custom-dataset",
         "root": "/absolute/path/to/dataset",
+        "features_root": "/absolute/path/to/features/custom-dataset",
+        "regressors": {
+            "train": false,
+            "validate": true
+        },
         "labels": "/absolute/path/to/dataset/labels.csv",
         "directories": {
             "hr": "/absolute/path/to/hr",
@@ -67,48 +78,48 @@
                 "features": [
                     "nr"
                 ],
-                "output": "features/nr.csv",
-                "profile_output": "features/profiling/nr_profile.csv"
+                "output": "{features_root}/nr.csv",
+                "profile_output": "{features_root}/profiling/nr_profile.csv"
             },
             "fr": {
                 "enabled": true,
                 "features": [
                     "fr"
                 ],
-                "output": "features/fr.csv",
-                "profile_output": "features/profiling/fr_profile.csv"
+                "output": "{features_root}/fr.csv",
+                "profile_output": "{features_root}/profiling/fr_profile.csv"
             },
             "vgg": {
                 "enabled": true,
                 "features": [
                     "vgg"
                 ],
-                "output": "features/vgg.csv",
-                "profile_output": "features/profiling/vgg_profile.csv"
+                "output": "{features_root}/vgg.csv",
+                "profile_output": "{features_root}/profiling/vgg_profile.csv"
             },
             "resnet": {
                 "enabled": true,
                 "features": [
                     "resnet"
                 ],
-                "output": "features/resnet.csv",
-                "profile_output": "features/profiling/resnet_profile.csv"
+                "output": "{features_root}/resnet.csv",
+                "profile_output": "{features_root}/profiling/resnet_profile.csv"
             },
             "ref_vgg": {
                 "enabled": false,
                 "features": [
                     "ref-vgg"
                 ],
-                "output": "features/ref_vgg.csv",
-                "profile_output": "features/profiling/ref_vgg_profile.csv"
+                "output": "{features_root}/ref_vgg.csv",
+                "profile_output": "{features_root}/profiling/ref_vgg_profile.csv"
             },
             "ref_resnet": {
                 "enabled": false,
                 "features": [
                     "ref-resnet"
                 ],
-                "output": "features/ref_resnet.csv",
-                "profile_output": "features/profiling/ref_resnet_profile.csv"
+                "output": "{features_root}/ref_resnet.csv",
+                "profile_output": "{features_root}/profiling/ref_resnet_profile.csv"
             },
             "timm": {
                 "enabled": false,
@@ -119,8 +130,8 @@
                     "convnext_tiny": "convnext_tiny",
                     "vit_base_patch16_224": "vit_base_patch16_224"
                 },
-                "output": "features/timm.csv",
-                "profile_output": "features/profiling/timm_profile.csv"
+                "output": "{features_root}/timm.csv",
+                "profile_output": "{features_root}/profiling/timm_profile.csv"
             },
             "ref_timm": {
                 "enabled": false,
@@ -131,16 +142,16 @@
                     "convnext_tiny": "convnext_tiny",
                     "vit_base_patch16_224": "vit_base_patch16_224"
                 },
-                "output": "features/ref_timm.csv",
-                "profile_output": "features/profiling/ref_timm_profile.csv"
+                "output": "{features_root}/ref_timm.csv",
+                "profile_output": "{features_root}/profiling/ref_timm_profile.csv"
             },
             "siglip": {
                 "enabled": true,
                 "features": [
                     "siglip"
                 ],
-                "output": "features/siglip.csv",
-                "profile_output": "features/profiling/siglip_profile.csv"
+                "output": "{features_root}/siglip.csv",
+                "profile_output": "{features_root}/profiling/siglip_profile.csv"
             },
             "noise": {
                 "enabled": true,
@@ -148,8 +159,8 @@
                     "gaussian",
                     "uniform"
                 ],
-                "output": "features/noise.csv",
-                "profile_output": "features/profiling/noise_profile.csv"
+                "output": "{features_root}/noise.csv",
+                "profile_output": "{features_root}/profiling/noise_profile.csv"
             }
         }
     },
@@ -159,7 +170,7 @@
             "n_components": [
                 5
             ],
-            "output_dir": "features/pca",
+            "output_dir": "{features_root}/pca",
             "disable_auto_split": false,
             "split_seed": 42,
             "test_size": 0.2
@@ -167,7 +178,7 @@
         "runs": [
             {
                 "enabled": true,
-                "input": "features/vgg.csv",
+                "input": "{features_root}/vgg.csv",
                 "blocks": [
                     "vgg=vgg_"
                 ],
@@ -175,7 +186,7 @@
             },
             {
                 "enabled": true,
-                "input": "features/resnet.csv",
+                "input": "{features_root}/resnet.csv",
                 "blocks": [
                     "resnet=resnet_"
                 ],
@@ -183,8 +194,8 @@
             },
             {
                 "enabled": false,
-                "input": "features/vgg.csv",
-                "reference_input": "features/ref_vgg.csv",
+                "input": "{features_root}/vgg.csv",
+                "reference_input": "{features_root}/ref_vgg.csv",
                 "blocks": [
                     "vgg=vgg_"
                 ],
@@ -196,8 +207,8 @@
             },
             {
                 "enabled": false,
-                "input": "features/resnet.csv",
-                "reference_input": "features/ref_resnet.csv",
+                "input": "{features_root}/resnet.csv",
+                "reference_input": "{features_root}/ref_resnet.csv",
                 "blocks": [
                     "resnet=resnet_"
                 ],
@@ -213,28 +224,28 @@
         "enabled": false,
         "runs": [
             {
-                "reference_input": "features/pca/ref_vgg_shared_pca5.csv",
-                "sr_input": "features/pca/vgg_shared_pca5.csv",
+                "reference_input": "{features_root}/pca/ref_vgg_shared_pca5.csv",
+                "sr_input": "{features_root}/pca/vgg_shared_pca5.csv",
                 "blocks": [
                     "vgg_diff=vgg_pca_,vgg_pca_"
                 ],
-                "output": "features/vgg_diff_pca5.csv"
+                "output": "{features_root}/vgg_diff_pca5.csv"
             },
             {
-                "reference_input": "features/pca/ref_resnet_shared_pca5.csv",
-                "sr_input": "features/pca/resnet_shared_pca5.csv",
+                "reference_input": "{features_root}/pca/ref_resnet_shared_pca5.csv",
+                "sr_input": "{features_root}/pca/resnet_shared_pca5.csv",
                 "blocks": [
                     "resnet_diff=resnet_pca_,resnet_pca_"
                 ],
-                "output": "features/resnet_diff_pca5.csv"
+                "output": "{features_root}/resnet_diff_pca5.csv"
             }
         ]
     },
     "statistics": {
         "enabled": true,
-        "output": "features/stats.csv",
+        "output": "{features_root}/stats.csv",
         "profile": false,
-        "profile_output": "features/profiling/stats_profile.csv",
+        "profile_output": "{features_root}/profiling/stats_profile.csv",
         "percentiles": [
             5,
             95
@@ -251,7 +262,6 @@
         "config": {
             "seed": 42,
             "experiment_name": "baseline",
-            "test_size": 0.2,
             "scale_features": true,
             "permutation_repeats": 10,
             "save_dataset_snapshot": true,
@@ -313,27 +323,7 @@
                 ]
             },
             "paths": {
-                "features_root": "features",
                 "plots_root": "plots"
-            },
-            "dataset": {
-                "name_column": "name",
-                "score_column": "score",
-                "sr_method_column": "sr_method",
-                "sr_filename_column": "sr_filename",
-                "filename_suffix": ".npy.gz",
-                "group_segment_index": 2,
-                "group_remove_suffix": ".npy.gz",
-                "metadata_drop": [
-                    "sample_id",
-                    "sr_method",
-                    "sr_filename",
-                    "sr_path",
-                    "gt_path",
-                    "lr_path",
-                    "set_type"
-                ],
-                "image_column": "image"
             },
             "features": {
                 "pca_n": 5,

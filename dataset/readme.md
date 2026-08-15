@@ -100,11 +100,36 @@ The default pipeline configuration selects QualiSR-Set120:
 
 ```json
 "datasets": [
-    {"name": "QualiSR-Set120", "root": "dataset"}
+    {
+        "name": "QualiSR-Set120",
+        "root": "dataset",
+        "features_root": "features",
+        "regressors": {
+            "train": true,
+            "validate": true,
+            "test_size": 0.2
+        }
+    }
 ]
 ```
 
-Multiple entries are concatenated in one run. Bundled names include `QualiSR-Set120`, `dsr-dataset`, `ISRGen-QA`, and `RealSRQ`.
+`features_root` is resolved relative to the pipeline config and is reused by
+feature-producing stages and regressors through `{features_root}` path
+templates. Each dataset may therefore keep its feature CSVs in a separate
+directory without repeating paths in the regressor section.
+
+For regressors, set `train` and/or `validate` on each dataset:
+
+- A training dataset must define `test_size` in `[0, 1)`. With `test_size: 0`,
+  all samples train the regressors and none of that dataset is used for
+  validation.
+- With both roles enabled and `test_size > 0`, the dataset is split by
+  `test_case`; the held-out groups are used for validation.
+- A validation-only dataset omits `test_size`, and the entire dataset is used
+  for validation.
+
+Multiple entries are combined in one run. Bundled names include
+`QualiSR-Set120`, `dsr-dataset`, `ISRGen-QA`, and `RealSRQ`.
 
 A user parser is selected by file path and function name:
 
@@ -112,6 +137,8 @@ A user parser is selected by file path and function name:
 {
     "name": "my-dataset",
     "root": "/data/my-dataset",
+    "features_root": "/data/features/my-dataset",
+    "regressors": {"train": false, "validate": true},
     "parser": {"path": "parsers/my_dataset.py", "function": "parse_dataset"},
     "kwargs": {"labels_fn": "scores.csv"}
 }
@@ -125,6 +152,8 @@ For labels-backed datasets with conventional matching, configure the directories
 {
     "name": "my-directory-dataset",
     "root": "/data/my-dataset",
+    "features_root": "/data/features/my-directory-dataset",
+    "regressors": {"train": false, "validate": true},
     "labels": "labels.csv",
     "directories": {
         "hr": "/data/my-dataset/hr",
