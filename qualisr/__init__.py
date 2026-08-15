@@ -9,6 +9,8 @@ __all__ = [
     "PipelineOptions",
     "extract_regressor_config",
     "load_config",
+    "load_dataset",
+    "load_datasets",
     "load_pipeline_config",
     "load_regressor_config",
     "run_experiment",
@@ -29,6 +31,8 @@ def __getattr__(name: str) -> Any:
         "run_regressor_experiment",
     }:
         return getattr(import_module("qualisr.api"), name)
+    if name in {"load_dataset", "load_datasets"}:
+        return getattr(import_module("qualisr.datasets"), name)
     if name in {"extract_regressor_config", "run_experiment"}:
         return getattr(import_module("qualisr.regressors"), name)
     raise AttributeError(f"module 'qualisr' has no attribute {name!r}")

@@ -13,8 +13,6 @@
 
 <sup>3</sup>MSU Institute for Artificial Intelligence, Lomonosov Moscow State University
 
-🚩 *Submitted to [ACM MM 2026 Open Source Software](https://2026.acmmm.org/site/call-open-source.html).*
-
 ## 🔎 Overview
 
 This project studies which features extracted from Low-Resolution (LR) and Super-Resolution (SR) images are most informative for Image Quality Assessment (IQA). Its purpose is to assist researchers in studying the best features for their upscaled image quality metrics by providing a pipeline to extract the features and build a comprehensive graphical summary on their contribution to IQA and correlation of the resulting metric with human scores.
@@ -47,11 +45,14 @@ qualisr-run-regressors
 ```
 
 From a cloned repository, you can also run against the editable root
-`configs/`, `scores/`, and `features/` files explicitly:
+`configs/`, `dataset/`, and `features/` files explicitly:
 
 ```bash
-qualisr-run-regressors --config configs/default.json
+qualisr-run-regressors --config configs/pipeline.json
 ```
+
+Downloading QualiSR-Set120 is optional for this regressor smoke test and is
+only needed to reproduce feature extraction or the full unified pipeline.
 
 Or build Docker image:
 
@@ -65,7 +66,7 @@ You can run any of the following commands inside the Docker container:
 ```bash
 docker run --rm -it --mount type=bind,source="${PWD}",target=/workspace qualisr-lab bash
 qualisr --help
-qualisr-run-regressors --config configs/default.json
+qualisr-run-regressors
 
 ```
 
@@ -97,7 +98,7 @@ python -m pip install "qualisr-lab[features,regressors]"
 
 The legacy fully pinned environment is kept in `requirements.txt`.
 
-See [dataset/readme.md](dataset/readme.md) for dataset download notes.
+See [dataset/readme.md](dataset/readme.md) for dataset download notes and the parser/sample interface for custom datasets.
 
 ---
 
@@ -107,20 +108,24 @@ The CLI remains the recommended way to run full experiments, but installed
 packages also expose a small stable API:
 
 ```python
-from qualisr import load_regressor_config, run_regressor_experiment
+from qualisr import run_regressor_experiment
 
-cfg = load_regressor_config()
-result = run_regressor_experiment(cfg, make_plots=False)
+result = run_regressor_experiment(make_plots=False)
 print(result["results"])
 ```
 
 For the unified pipeline:
 
 ```python
-from qualisr import PipelineOptions, load_pipeline_config, run_pipeline
+from qualisr import PipelineOptions, load_datasets, load_pipeline_config, run_pipeline
 
 cfg = load_pipeline_config()
-run_pipeline(cfg, options=PipelineOptions(only_section=["regressors"], no_plots=True))
+samples = load_datasets(cfg["datasets"])
+run_pipeline(
+    cfg,
+    samples=samples,
+    options=PipelineOptions(only_section=["regressors"], no_plots=True),
+)
 ```
 
 Implementation modules such as `qualisr.regressors`, `qualisr.features`, and
@@ -149,7 +154,9 @@ The script writes feature-group CSVs such as `features/fr.csv`, `features/nr.csv
 
 ## 🚀 Workflow
 
-You may either launch the whole pipeline in a single command with your JSON config as in previous section or do each step separately:
+You may either launch the whole pipeline in a single command with your JSON config as in the previous section or do each step separately. The unified pipeline parses the configured `datasets` entries into one shared sample list; datasets may use a bundled parser, a parser function from a user Python file, or explicit labels/image directories. Multiple entries are combined in one run. See [dataset/readme.md](dataset/readme.md) for the complete contract.
+
+The standalone commands below retain their directory-based arguments for focused use outside the unified pipeline.
 
 ### Step 0 (optional): Prepare reference images
 
@@ -174,7 +181,7 @@ qualisr-make-reference \
 
 ### Step 1: Compute image features
 
-Compute FR / NR / [VGG](https://arxiv.org/abs/1409.1556) / [ResNet](https://arxiv.org/abs/1512.03385) / [SigLIP](https://arxiv.org/abs/2303.15343) features for SR images and save them into a single CSV file.
+Compute FR / NR / [VGG](https://arxiv.org/abs/1409.1556) / [ResNet](https://arxiv.org/abs/1512.03385) / [SigLIP](https://arxiv.org/abs/2303.15343) features for SR images and save them into a single CSV file. VGG, ResNet, and timm embeddings can also be extracted from one configured SR-resolution reference type.
 
 SR methods are passed as `METHOD=DIR`.  
 Reference image filenames are expected in the format:
@@ -194,6 +201,24 @@ qualisr-extract-features \
   --device cuda
 ```
 
+To extract the corresponding embeddings from one reference type, select it with
+`--embedding-reference` and use the `ref-vgg`, `ref-resnet`, or `ref-timm`
+feature names. For example:
+
+```bash
+qualisr-extract-features \
+  --sr-dirs PASD=dataset/sr/PASD SUPIR=dataset/sr/SUPIR RealESRGAN=dataset/sr/RealESRGAN \
+  --ref-dirs bicubic=dataset/ref/bicubic \
+  --embedding-reference bicubic \
+  --features ref-vgg,ref-resnet \
+  --output features/reference_embeddings.csv \
+  --device cuda
+```
+
+In the unified pipeline, configure the reference once as
+`features.common.embedding_reference`. All enabled reference-embedding groups
+use that same reference.
+
 Add `--profile` to save `<output_stem>_profile.csv` with mean runtime per feature. Add `--profile-flops` to also estimate PyTorch model FLOPs for features such as VGG, ResNet, SigLIP, and PyIQA metrics; this implies profiling and reruns model calls, so it is slower.
 
 ---
@@ -212,9 +237,43 @@ qualisr-apply-pca \
   --output-dir features/pca
 ```
 
+For component-wise differences after PCA, independently fitted PCA coordinates
+are not comparable. Use paired mode to fit one basis on the stacked SR and
+reference training rows and transform both inputs:
+
+```bash
+qualisr-apply-pca \
+  --input features/vgg.csv \
+  --reference-input features/ref_vgg.csv \
+  --blocks vgg=vgg_ \
+  --reference-blocks vgg=ref_vgg_ \
+  --n-components 5 \
+  --output-dir features/pca \
+  --output-template vgg_shared_pca{n}.csv \
+  --reference-output-template ref_vgg_shared_pca{n}.csv
+```
+
 ---
 
-### Step 3: Compute artifact-mask statistics
+### Step 3 (optional): Compute embedding differences
+
+Compute signed, element-wise `SR - reference` differences. Rows are matched by
+`sample_id`, and block mappings explicitly identify the corresponding columns:
+
+```bash
+qualisr-embedding-difference \
+  --reference-input features/pca/ref_vgg_shared_pca5.csv \
+  --sr-input features/pca/vgg_shared_pca5.csv \
+  --blocks vgg_diff=vgg_pca_,vgg_pca_ \
+  --output features/vgg_diff_pca5.csv
+```
+
+The same command can operate on raw embeddings, for example with
+`--blocks vgg_diff=ref_vgg_,vgg_`.
+
+---
+
+### Step 4: Compute artifact-mask statistics
 
 Compute summary statistics for heatmaps stored as `.npy`, `.npy.gz`, or compatible compressed files.  
 Input directories can be passed as `PREFIX=DIR` to ensure stable sample naming.
@@ -231,13 +290,17 @@ Add `--profile` to save `<output_stem>_profile.csv` with mean runtime and simple
 
 ---
 
-### Step 4: Fit regressors and analyze results
+### Step 5: Fit regressors and analyze results
 
 Train regressors and produce summary on feature importances and correlations. The correlation plot can also include direct NR/FR metric baselines from feature CSV files.
 
 ```bash
-qualisr-run-regressors --config configs/default.json
+qualisr-run-regressors --config configs/pipeline.json
 ```
+
+Training and validation datasets, their split behavior, and their feature
+roots are declared once in the top-level `datasets` list. See
+[dataset/readme.md](dataset/readme.md#selecting-datasets).
 
 Add `--profile` to save `regressor_profile.csv` with train/predict runtime and estimated prediction FLOPs for tree regressors. If feature profile CSVs are available, pass them with `--feature-profile-files` or configure `profiling.feature_profile_files`; the pipeline also saves `regressor_total_profile.csv` with summed feature + regressor runtime/FLOPs.
 

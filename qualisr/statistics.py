@@ -2,7 +2,7 @@ import argparse
 import gzip
 import logging
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TypeVar
 
@@ -72,7 +72,7 @@ def timed_stat(
     return value
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Compute summary statistics for heatmaps stored as .npy or .gz(.npy) files. "
@@ -83,11 +83,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--heatmap-dirs",
         nargs="+",
-        required=True,
+        default=None,
         metavar="PREFIX=DIR",
         help=(
-            "One or more heatmap directories. "
-            "Examples: PASD=/data/heatmaps/pasd SUPIR=/data/heatmaps/supir"
+            "One or more heatmap directories. Examples: PASD=/data/heatmaps/pasd SUPIR=/data/heatmaps/supir"
         ),
     )
     parser.add_argument("--output", required=True, help="Output CSV path.")
@@ -145,7 +144,7 @@ def parse_args() -> argparse.Namespace:
         default="INFO",
     )
 
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def parse_named_directories(specs: Iterable[str]) -> dict[str, Path]:
@@ -241,7 +240,7 @@ def format_area_name(threshold: float) -> str:
 
 
 def compute_statistics_row(
-    name: str,
+    sample_id: str,
     heatmap: np.ndarray,
     percentiles: Sequence[float],
     area_thresholds: Sequence[float],
@@ -249,7 +248,7 @@ def compute_statistics_row(
 ) -> dict[str, float]:
     size = heatmap.size
     row: dict[str, float] = {
-        "name": name,
+        "sample_id": sample_id,
         "min": float(timed_stat(profiler, "min", lambda: np.min(heatmap), flops=max(size - 1, 0))),
         "max": float(timed_stat(profiler, "max", lambda: np.max(heatmap), flops=max(size - 1, 0))),
         "mean": float(timed_stat(profiler, "mean", lambda: np.mean(heatmap), flops=size)),
@@ -259,7 +258,9 @@ def compute_statistics_row(
 
     for percentile in percentiles:
         column = format_percentile_name(percentile)
-        row[column] = float(timed_stat(profiler, column, lambda percentile=percentile: np.percentile(heatmap, percentile)))
+        row[column] = float(
+            timed_stat(profiler, column, lambda percentile=percentile: np.percentile(heatmap, percentile))
+        )
 
     for threshold in area_thresholds:
         column = format_area_name(threshold)
@@ -287,18 +288,25 @@ def compute_statistics_row(
 
 
 def build_output_columns(percentiles: Sequence[float], area_thresholds: Sequence[float]) -> list[str]:
-    base_cols = ["name", "min", "max", "mean", "median", "std"]
+    base_cols = ["sample_id", "min", "max", "mean", "median", "std"]
     percentile_cols = [format_percentile_name(p) for p in percentiles]
     area_cols = [format_area_name(t) for t in area_thresholds]
     return base_cols + percentile_cols + area_cols
 
 
-def main() -> None:
-    args = parse_args()
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    samples: Sequence[Mapping[str, object]] | None = None,
+) -> None:
+    args = parse_args(argv)
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(levelname)s: %(message)s")
 
-    named_dirs = parse_named_directories(args.heatmap_dirs)
-    require_existing_directories(named_dirs)
+    named_dirs = parse_named_directories(args.heatmap_dirs or ())
+    if samples is None:
+        if not named_dirs:
+            raise ValueError("--heatmap-dirs is required when samples are not supplied")
+        require_existing_directories(named_dirs)
 
     percentiles = list(args.percentiles)
     area_thresholds = list(args.area_thresholds)
@@ -311,44 +319,54 @@ def main() -> None:
 
     rows: list[dict[str, float]] = []
     profiler = FeatureProfiler() if args.profile else None
-    for prefix, directory in named_dirs.items():
-        files = list_heatmap_files(directory, recursive=args.recursive, extensions=extensions)
-        LOGGER.info("%s: found %d heatmaps in %s", prefix, len(files), directory)
+    if samples is not None:
+        work_items = [
+            (str(sample["sample_id"]), Path(str(sample["heatmap_path"])).expanduser().resolve())
+            for sample in samples
+        ]
+        progress = tqdm(work_items, desc="heatmaps", unit="file", disable=args.no_progress)
+        iterator = progress
+    else:
+        work_items = []
+        for prefix, directory in named_dirs.items():
+            files = list_heatmap_files(directory, recursive=args.recursive, extensions=extensions)
+            LOGGER.info("%s: found %d heatmaps in %s", prefix, len(files), directory)
+            for path in files:
+                relative_name = path.relative_to(directory).as_posix()
+                sample_name = f"{prefix}/{relative_name}" if prefix else relative_name
+                work_items.append((sample_name, path))
+        iterator = tqdm(work_items, desc="heatmaps", unit="file", disable=args.no_progress)
 
-        progress = tqdm(files, desc=prefix or directory.name, unit="file", disable=args.no_progress)
-        for path in progress:
-            relative_name = path.relative_to(directory).as_posix()
-            sample_name = f"{prefix}/{relative_name}" if prefix else relative_name
+    for sample_name, path in iterator:
+        try:
+            heatmap = load_heatmap(path)
+        except Exception as exc:
+            message = f"Failed to load heatmap {path}: {exc}"
+            if args.strict:
+                raise RuntimeError(message) from exc
+            LOGGER.warning(message)
+            continue
 
-            try:
-                heatmap = load_heatmap(path)
-            except Exception as exc:
-                message = f"Failed to load heatmap {path}: {exc}"
-                if args.strict:
-                    raise RuntimeError(message) from exc
-                LOGGER.warning(message)
-                continue
+        try:
+            row = compute_statistics_row(
+                sample_id=sample_name,
+                heatmap=heatmap,
+                percentiles=percentiles,
+                area_thresholds=area_thresholds,
+                profiler=profiler,
+            )
+        except Exception as exc:
+            message = f"Failed to compute stats for {path}: {exc}"
+            if args.strict:
+                raise RuntimeError(message) from exc
+            LOGGER.warning(message)
+            continue
 
-            try:
-                row = compute_statistics_row(
-                    name=sample_name,
-                    heatmap=heatmap,
-                    percentiles=percentiles,
-                    area_thresholds=area_thresholds,
-                    profiler=profiler,
-                )
-            except Exception as exc:
-                message = f"Failed to compute stats for {path}: {exc}"
-                if args.strict:
-                    raise RuntimeError(message) from exc
-                LOGGER.warning(message)
-                continue
-
-            rows.append(row)
+        rows.append(row)
 
     columns = build_output_columns(percentiles, area_thresholds)
     output_df = pd.DataFrame(rows, columns=columns)
-    output_df.sort_values("name", inplace=True)
+    output_df.sort_values("sample_id", inplace=True)
 
     output_path = Path(args.output).expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)

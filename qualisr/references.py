@@ -21,8 +21,9 @@ import logging
 import shlex
 import subprocess
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 from PIL import Image
 from tqdm import tqdm
@@ -31,12 +32,8 @@ LOGGER = logging.getLogger("gt_rf")
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
 SUPPORTED_REFS = ("bicubic", "rlfn", "span")
 
-DEFAULT_RLFN_TEMPLATE = (
-    "{python} {script} --ckpt {ckpt} --scale {scale} --image {input} --output {output}"
-)
-DEFAULT_SPAN_TEMPLATE = (
-    "{python} {script} --ckpt {ckpt} --scale {scale} --image {input} --output {output}"
-)
+DEFAULT_RLFN_TEMPLATE = "{python} {script} --ckpt {ckpt} --scale {scale} --image {input} --output {output}"
+DEFAULT_SPAN_TEMPLATE = "{python} {script} --ckpt {ckpt} --scale {scale} --image {input} --output {output}"
 
 
 class ImageIndex:
@@ -116,8 +113,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scale", type=int, default=4, help="Scale argument passed to SR model inference")
     parser.add_argument("--python-exec", default="python3", help="Python executable for inference commands")
 
-    parser.add_argument("--rlfn-script", default='./realtime_sr/RLFN/inference-RLFN.py', help="Path to RLFN inference script")
-    parser.add_argument("--rlfn-ckpt", default='./realtime_sr/RLFN/rlfn-tuned-4x.pth', help="Path to RLFN checkpoint")
+    parser.add_argument(
+        "--rlfn-script", default="./realtime_sr/RLFN/inference-RLFN.py", help="Path to RLFN inference script"
+    )
+    parser.add_argument(
+        "--rlfn-ckpt", default="./realtime_sr/RLFN/rlfn-tuned-4x.pth", help="Path to RLFN checkpoint"
+    )
     parser.add_argument(
         "--rlfn-cmd-template",
         default=DEFAULT_RLFN_TEMPLATE,
@@ -127,8 +128,12 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
-    parser.add_argument("--span-script", default='./realtime_sr/SPAN/inference-SPAN.py', help="Path to SPAN inference script")
-    parser.add_argument("--span-ckpt", default='./realtime_sr/SPAN/span-tuned-4x.pth', help="Path to SPAN checkpoint")
+    parser.add_argument(
+        "--span-script", default="./realtime_sr/SPAN/inference-SPAN.py", help="Path to SPAN inference script"
+    )
+    parser.add_argument(
+        "--span-ckpt", default="./realtime_sr/SPAN/span-tuned-4x.pth", help="Path to SPAN checkpoint"
+    )
     parser.add_argument(
         "--span-cmd-template",
         default=DEFAULT_SPAN_TEMPLATE,
@@ -189,9 +194,7 @@ def ensure_existing_dir(path: Path, label: str) -> None:
 
 
 def resolve_output_dirs(args: argparse.Namespace, refs: Sequence[str]) -> dict[str, Path]:
-    ref_dirs = (
-        parse_named_paths(args.ref_dirs, "--ref-dirs", lowercase_keys=True) if args.ref_dirs else {}
-    )
+    ref_dirs = parse_named_paths(args.ref_dirs, "--ref-dirs", lowercase_keys=True) if args.ref_dirs else {}
 
     unknown = [name for name in ref_dirs if name not in SUPPORTED_REFS]
     if unknown:
@@ -217,6 +220,141 @@ def resolve_output_dirs(args: argparse.Namespace, refs: Sequence[str]) -> dict[s
         resolved[ref] = out_dir
 
     return resolved
+
+
+def generate_references(
+    samples: Sequence[dict[str, Any]],
+    cfg: Mapping[str, Any],
+) -> Counter[str]:
+    """Generate configured references for parsed samples and update their paths."""
+
+    refs = [str(ref).lower() for ref in cfg.get("refs", SUPPORTED_REFS)]
+    unknown = [ref for ref in refs if ref not in SUPPORTED_REFS]
+    if unknown:
+        raise ValueError(f"Unsupported references: {unknown}")
+
+    output_ext = normalize_output_ext(str(cfg.get("output_ext", ".png")))
+    suffix_by_ref = {
+        "bicubic": str(cfg.get("bicubic_suffix", "bicubic")),
+        "rlfn": str(cfg.get("rlfn_suffix", "rlfn")),
+        "span": str(cfg.get("span_suffix", "span")),
+    }
+    explicit_dirs = {
+        str(name).lower(): Path(str(path)).expanduser().resolve()
+        for name, path in dict(cfg.get("ref_dirs") or {}).items()
+    }
+    out_root_value = cfg.get("out_root")
+    out_root = Path(str(out_root_value)).expanduser().resolve() if out_root_value else None
+    dataset_names = {str(sample["dataset"]) for sample in samples}
+    multiple_datasets = len(dataset_names) > 1
+
+    def output_dir(sample: Mapping[str, Any], ref_name: str) -> Path:
+        if ref_name in explicit_dirs:
+            result = explicit_dirs[ref_name]
+        elif out_root is not None:
+            result = (
+                out_root / str(sample["dataset"]) / ref_name if multiple_datasets else out_root / ref_name
+            )
+        else:
+            result = Path(str(sample["dataset_root"])) / "ref" / ref_name
+        result.mkdir(parents=True, exist_ok=True)
+        return result
+
+    model_defaults = {
+        "rlfn_script": "./realtime_sr/RLFN/inference-RLFN.py",
+        "rlfn_ckpt": "./realtime_sr/RLFN/rlfn-tuned-4x.pth",
+        "span_script": "./realtime_sr/SPAN/inference-SPAN.py",
+        "span_ckpt": "./realtime_sr/SPAN/span-tuned-4x.pth",
+    }
+
+    stats: Counter[str] = Counter()
+    limit = cfg.get("limit")
+    selected = list(samples[: int(limit)]) if limit is not None else list(samples)
+    progress = tqdm(selected, desc="references", unit="img", disable=bool(cfg.get("no_progress")))
+    for sample in progress:
+        sr_path = Path(str(sample["sr_path"])).expanduser().resolve()
+        lr_path = Path(str(sample["lr_path"])).expanduser().resolve()
+        sr_method = str(sample["method"])
+        strict = bool(cfg.get("strict"))
+        stats["sr_total"] += 1
+        try:
+            with Image.open(sr_path) as sr_image:
+                sr_size = sr_image.size
+        except Exception as exc:
+            stats["failed_sr_load"] += 1
+            maybe_raise(f"Failed to load SR image {sr_path}: {exc}", strict)
+            continue
+
+        ref_paths = dict(sample.get("ref_paths") or {})
+        for ref_name in refs:
+            out_path = build_output_path(
+                out_dir=output_dir(sample, ref_name),
+                sr_stem=sr_path.stem,
+                sr_method=sr_method,
+                ref_suffix=suffix_by_ref[ref_name],
+                output_ext=output_ext,
+            )
+            succeeded = out_path.exists() and not bool(cfg.get("overwrite"))
+            if succeeded:
+                stats[f"{ref_name}_skipped_existing"] += 1
+            elif ref_name == "bicubic":
+                try:
+                    generate_bicubic(lr_path, sr_size, out_path)
+                    stats["bicubic_ok"] += 1
+                    succeeded = True
+                except Exception as exc:
+                    stats["bicubic_failed"] += 1
+                    maybe_raise(f"Bicubic failed for {sr_path.name}: {exc}", strict)
+            else:
+                template = str(
+                    cfg.get(f"{ref_name}_cmd_template") or globals()[f"DEFAULT_{ref_name.upper()}_TEMPLATE"]
+                )
+                cmd = render_command(
+                    template,
+                    {
+                        "python": str(cfg.get("python_exec", "python3")),
+                        "script": str(
+                            Path(str(cfg.get(f"{ref_name}_script", model_defaults[f"{ref_name}_script"])))
+                            .expanduser()
+                            .resolve()
+                        ),
+                        "ckpt": str(
+                            Path(str(cfg.get(f"{ref_name}_ckpt", model_defaults[f"{ref_name}_ckpt"])))
+                            .expanduser()
+                            .resolve()
+                        ),
+                        "scale": str(sample.get("scale") or cfg.get("scale", 4)),
+                        "input": str(lr_path),
+                        "output": str(out_path),
+                    },
+                )
+                result = run_inference_command(cmd)
+                if result.returncode != 0 or not out_path.exists():
+                    stats[f"{ref_name}_failed"] += 1
+                    stderr_tail = (result.stderr or "").strip().splitlines()[-3:]
+                    maybe_raise(
+                        f"{ref_name.upper()} failed for {sr_path.name}. Exit={result.returncode}. "
+                        f"Stderr tail: {' | '.join(stderr_tail)}",
+                        strict,
+                    )
+                else:
+                    try:
+                        ensure_output_size(out_path, sr_size)
+                        stats[f"{ref_name}_ok"] += 1
+                        succeeded = True
+                    except Exception as exc:
+                        stats[f"{ref_name}_failed"] += 1
+                        maybe_raise(
+                            f"{ref_name.upper()} output resize failed for {sr_path.name}: {exc}", strict
+                        )
+
+            if succeeded:
+                resolved = str(out_path.resolve())
+                ref_paths[ref_name] = resolved
+                sample[f"{ref_name}_path"] = resolved
+        sample["ref_paths"] = ref_paths
+
+    return stats
 
 
 def normalize_output_ext(ext: str) -> str:

@@ -13,7 +13,14 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-SECTION_ORDER = ("references", "features", "pca", "statistics", "regressors")
+SECTION_ORDER = (
+    "references",
+    "features",
+    "pca",
+    "embedding_difference",
+    "statistics",
+    "regressors",
+)
 
 
 @dataclass(slots=True)
@@ -60,6 +67,21 @@ def deep_update(base: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]
         else:
             result[key] = value
     return result
+
+
+def expand_features_root(value: Any, features_root: str) -> Any:
+    if isinstance(value, str):
+        return value.replace("{features_root}", features_root)
+    if isinstance(value, dict):
+        return {key: expand_features_root(item, features_root) for key, item in value.items()}
+    if isinstance(value, list):
+        return [expand_features_root(item, features_root) for item in value]
+    return value
+
+
+def dataset_sample_groups(samples: Sequence[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    names = sorted({str(sample["dataset"]) for sample in samples})
+    return [[sample for sample in samples if str(sample["dataset"]) == name] for name in names]
 
 
 def section_enabled(cfg: Mapping[str, Any], default: bool = False) -> bool:
@@ -176,6 +198,12 @@ def run_references(cfg: Mapping[str, Any]) -> None:
     run_module_main("qualisr.references", argv)
 
 
+def run_references_for_samples(cfg: Mapping[str, Any], samples: list[dict[str, Any]]) -> None:
+    from qualisr.references import generate_references
+
+    generate_references(samples, cfg)
+
+
 def feature_group_items(cfg: Mapping[str, Any]) -> list[tuple[str, Mapping[str, Any]]]:
     groups = cfg.get("groups", [])
     if isinstance(groups, Mapping):
@@ -187,7 +215,17 @@ def feature_group_items(cfg: Mapping[str, Any]) -> list[tuple[str, Mapping[str, 
     ]
 
 
-def run_feature_group(common: Mapping[str, Any], name: str, group: Mapping[str, Any]) -> None:
+def run_feature_group(
+    common: Mapping[str, Any],
+    name: str,
+    group: Mapping[str, Any],
+    samples: list[dict[str, Any]] | None = None,
+) -> None:
+    if "embedding_reference" in group:
+        raise ValueError(
+            f"Feature group '{name}' defines embedding_reference; configure it once in "
+            "features.common instead."
+        )
     if not section_enabled(group, default=True):
         return
 
@@ -211,6 +249,7 @@ def run_feature_group(common: Mapping[str, Any], name: str, group: Mapping[str, 
     add_csv_value(argv, "--fr-metrics", merged.get("fr_metrics"))
     add_csv_value(argv, "--nr-metrics", merged.get("nr_metrics"))
     add_named_specs(argv, "--timm-encoders", merged.get("timm_encoders"))
+    add_value(argv, "--embedding-reference", merged.get("embedding_reference"))
     add_value(argv, "--siglip-model", merged.get("siglip_model"))
     add_value(argv, "--siglip-alpha", merged.get("siglip_alpha"))
     add_value(argv, "--noise-components", merged.get("noise_components"))
@@ -223,16 +262,21 @@ def run_feature_group(common: Mapping[str, Any], name: str, group: Mapping[str, 
     add_bool(argv, "--profile-flops", merged.get("profile_flops"))
     add_bool(argv, "--timm-no-pretrained", merged.get("timm_no_pretrained"))
     add_bool(argv, "--strict", merged.get("strict"))
-    run_module_main("qualisr.features", argv)
+    if samples is None:
+        run_module_main("qualisr.features", argv)
+    else:
+        from qualisr.features import main as features_main
+
+        features_main(argv, samples=samples)
 
 
-def run_features(cfg: Mapping[str, Any]) -> None:
+def run_features(cfg: Mapping[str, Any], samples: list[dict[str, Any]] | None = None) -> None:
     common = cfg.get("common", {})
     if not isinstance(common, Mapping):
         raise ValueError("features.common must be an object")
 
     for name, group in feature_group_items(cfg):
-        run_feature_group(common, name, group)
+        run_feature_group(common, name, group, samples=samples)
 
 
 def pca_run_items(cfg: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -258,10 +302,17 @@ def run_pca(cfg: Mapping[str, Any]) -> None:
 
         argv: list[str] = []
         add_value(argv, "--input", merged.get("input"))
+        add_value(argv, "--reference-input", merged.get("reference_input"))
         add_values(argv, "--n-components", merged.get("n_components"))
         add_values(argv, "--blocks", merged.get("blocks"))
+        add_values(argv, "--reference-blocks", merged.get("reference_blocks"))
         add_value(argv, "--output-dir", merged.get("output_dir"))
         add_value(argv, "--output-template", merged.get("output_template"))
+        add_value(
+            argv,
+            "--reference-output-template",
+            merged.get("reference_output_template"),
+        )
         add_value(argv, "--fit-column", merged.get("fit_column"))
         add_value(argv, "--fit-value", merged.get("fit_value"))
         add_value(argv, "--split-column", merged.get("split_column"))
@@ -278,7 +329,41 @@ def run_pca(cfg: Mapping[str, Any]) -> None:
         run_module_main("qualisr.pca", argv)
 
 
-def run_statistics(cfg: Mapping[str, Any]) -> None:
+def embedding_difference_run_items(cfg: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    runs = cfg.get("runs")
+    if runs is None and "reference_input" in cfg:
+        return [cfg]
+    if isinstance(runs, Mapping):
+        return [run or {} for run in runs.values()]
+    return [run for run in as_list(runs) if isinstance(run, Mapping)]
+
+
+def run_embedding_difference(cfg: Mapping[str, Any]) -> None:
+    common = cfg.get("common", {})
+    if not isinstance(common, Mapping):
+        raise ValueError("embedding_difference.common must be an object")
+
+    for index, run in enumerate(embedding_difference_run_items(cfg)):
+        merged = deep_update(dict(common), dict(run))
+        if not section_enabled(merged, default=True):
+            continue
+        required = ["reference_input", "sr_input", "blocks", "output"]
+        missing = [key for key in required if not merged.get(key)]
+        if missing:
+            raise ValueError(
+                f"Embedding-difference run #{index} is missing required fields: {missing}"
+            )
+
+        argv: list[str] = []
+        add_value(argv, "--reference-input", merged.get("reference_input"))
+        add_value(argv, "--sr-input", merged.get("sr_input"))
+        add_values(argv, "--blocks", merged.get("blocks"))
+        add_value(argv, "--output", merged.get("output"))
+        add_value(argv, "--log-level", merged.get("log_level"))
+        run_module_main("qualisr.embedding_difference", argv)
+
+
+def run_statistics(cfg: Mapping[str, Any], samples: list[dict[str, Any]] | None = None) -> None:
     argv: list[str] = []
     add_named_specs(argv, "--heatmap-dirs", cfg.get("heatmap_dirs"))
     add_value(argv, "--output", cfg.get("output"))
@@ -291,7 +376,12 @@ def run_statistics(cfg: Mapping[str, Any]) -> None:
     add_bool(argv, "--recursive", cfg.get("recursive"))
     add_bool(argv, "--strict", cfg.get("strict"))
     add_bool(argv, "--no-progress", cfg.get("no_progress"))
-    run_module_main("qualisr.statistics", argv)
+    if samples is None:
+        run_module_main("qualisr.statistics", argv)
+    else:
+        from qualisr.statistics import main as statistics_main
+
+        statistics_main(argv, samples=samples)
 
 
 def collect_feature_categories(features_cfg: Mapping[str, Any] | None) -> dict[str, list[str]]:
@@ -325,11 +415,7 @@ def collect_feature_categories(features_cfg: Mapping[str, Any] | None) -> dict[s
             for spec in _config_list_for_categories(timm_encoders):
                 categories["timm_prefixes"].append(spec.split("=", 1)[0].strip())
 
-    return {
-        key: sorted(set(value), key=str.lower)
-        for key, value in categories.items()
-        if value
-    }
+    return {key: sorted(set(value), key=str.lower) for key, value in categories.items() if value}
 
 
 def _config_list_for_categories(value: Any) -> list[str]:
@@ -347,10 +433,20 @@ def run_regressors_section(
     base_dir: Path,
     options: PipelineOptions,
     features_cfg: Mapping[str, Any] | None = None,
+    samples: list[dict[str, Any]] | None = None,
 ) -> None:
-    from qualisr.regressors import extract_regressor_config, run_experiment
+    from qualisr.regressors import (
+        extract_regressor_config,
+        resolve_regressor_config_paths,
+        run_experiment,
+    )
 
-    regressor_cfg = extract_regressor_config({"regressors": dict(cfg)}, base_dir)
+    if samples is None:
+        raise ValueError("regressors requires configured datasets")
+    regressor_cfg = resolve_regressor_config_paths(
+        extract_regressor_config({"regressors": dict(cfg)}),
+        base_dir,
+    )
     inferred_categories = collect_feature_categories(features_cfg)
     if inferred_categories:
         regressor_cfg = deep_update(
@@ -369,7 +465,7 @@ def run_regressors_section(
         regressor_cfg = deep_update(regressor_cfg, overrides)
 
     make_plots = bool(cfg.get("make_plots", True)) and not options.no_plots
-    result = run_experiment(regressor_cfg, make_plots=make_plots)
+    result = run_experiment(regressor_cfg, make_plots=make_plots, samples=samples)
     print(f"Saved regressor results to {result['output_dir']}")
     print(result["results"].to_string(index=False))
 
@@ -389,6 +485,7 @@ def run_pipeline(
     cfg: dict[str, Any],
     base_dir: Path | str | None = None,
     options: PipelineOptions | argparse.Namespace | None = None,
+    samples: list[dict[str, Any]] | None = None,
 ) -> None:
     if options is None:
         options = PipelineOptions()
@@ -398,6 +495,16 @@ def run_pipeline(
     base_path = Path.cwd() if base_dir is None else Path(base_dir)
     selected = set(options.only_section or SECTION_ORDER)
     skipped = set(options.skip_section or [])
+    active = selected - skipped
+
+    if samples is None and active.intersection(SECTION_ORDER):
+        from qualisr.datasets import load_datasets
+
+        dataset_entries = cfg.get("datasets")
+        if dataset_entries is not None:
+            if not isinstance(dataset_entries, list):
+                raise ValueError("datasets must be a list")
+            samples = load_datasets(dataset_entries, base_dir=base_path)
 
     for section_name in SECTION_ORDER:
         if section_name not in selected or section_name in skipped:
@@ -407,16 +514,51 @@ def run_pipeline(
             continue
 
         if section_name == "references":
-            run_references(section_cfg)
+            if samples is None:
+                run_references(section_cfg)
+            else:
+                run_references_for_samples(section_cfg, samples)
         elif section_name == "features":
-            run_features(section_cfg)
+            if samples is None:
+                run_features(section_cfg)
+            else:
+                for group in dataset_sample_groups(samples):
+                    run_features(
+                        expand_features_root(section_cfg, str(group[0]["features_root"])),
+                        samples=group,
+                    )
         elif section_name == "pca":
-            run_pca(section_cfg)
+            if samples is None:
+                run_pca(section_cfg)
+            else:
+                for group in dataset_sample_groups(samples):
+                    run_pca(expand_features_root(section_cfg, str(group[0]["features_root"])))
+        elif section_name == "embedding_difference":
+            if samples is None:
+                run_embedding_difference(section_cfg)
+            else:
+                for group in dataset_sample_groups(samples):
+                    run_embedding_difference(
+                        expand_features_root(section_cfg, str(group[0]["features_root"]))
+                    )
         elif section_name == "statistics":
-            run_statistics(section_cfg)
+            if samples is None:
+                run_statistics(section_cfg)
+            else:
+                for group in dataset_sample_groups(samples):
+                    run_statistics(
+                        expand_features_root(section_cfg, str(group[0]["features_root"])),
+                        samples=group,
+                    )
         elif section_name == "regressors":
             features_cfg = cfg.get("features", {})
-            run_regressors_section(section_cfg, base_path, options, features_cfg=features_cfg)
+            run_regressors_section(
+                section_cfg,
+                base_path,
+                options,
+                features_cfg=features_cfg,
+                samples=samples,
+            )
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

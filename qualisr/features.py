@@ -6,7 +6,7 @@ import os
 import re
 import time
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TypeVar
 
@@ -49,7 +49,19 @@ NR_METRICS: Sequence[str] = (
 NOISE_COMPONENTS = 5
 NOISE_SEED = 42
 
-SUPPORTED_FEATURES: Sequence[str] = ("fr", "nr", "vgg", "resnet", "timm", "siglip", "gaussian", "uniform")
+SUPPORTED_FEATURES: Sequence[str] = (
+    "fr",
+    "nr",
+    "vgg",
+    "resnet",
+    "timm",
+    "ref-vgg",
+    "ref-resnet",
+    "ref-timm",
+    "siglip",
+    "gaussian",
+    "uniform",
+)
 DEFAULT_FEATURES: Sequence[str] = ("fr", "nr", "vgg", "resnet", "siglip", "gaussian", "uniform")
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
 
@@ -159,7 +171,9 @@ def timed_call(
     with torch.no_grad():
         result = fn()
     sync_device(device)
-    profiler.record_runtime(feature, time.perf_counter() - start, samples=samples, feature_count=feature_count)
+    profiler.record_runtime(
+        feature, time.perf_counter() - start, samples=samples, feature_count=feature_count
+    )
     return result
 
 
@@ -353,7 +367,7 @@ def init_fr_models(device: torch.device, metrics: Sequence[str]) -> dict[str, ob
             raise ModuleNotFoundError(
                 f"Failed to initialize PyIQA FR metric '{metric}' because dependency "
                 f"'{exc.name}' is missing. Install feature dependencies with "
-                "`python -m pip install \"qualisr-lab[features]\"` or install the missing package directly."
+                '`python -m pip install "qualisr-lab[features]"` or install the missing package directly.'
             ) from exc
     return models_dict
 
@@ -370,7 +384,7 @@ def init_nr_models(device: torch.device, metrics: Sequence[str]) -> dict[str, ob
             raise ModuleNotFoundError(
                 f"Failed to initialize PyIQA NR metric '{metric}' because dependency "
                 f"'{exc.name}' is missing. Install feature dependencies with "
-                "`python -m pip install \"qualisr-lab[features]\"` or install the missing package directly."
+                '`python -m pip install "qualisr-lab[features]"` or install the missing package directly.'
             ) from exc
     return models_dict
 
@@ -409,7 +423,9 @@ def init_resnet(device: torch.device) -> tuple[torch.nn.Module, transforms.Compo
     return model, transform
 
 
-def init_timm_encoder(model_name: str, device: torch.device, pretrained: bool = True) -> tuple[torch.nn.Module, object]:
+def init_timm_encoder(
+    model_name: str, device: torch.device, pretrained: bool = True
+) -> tuple[torch.nn.Module, object]:
     import timm
     from timm.data import create_transform, resolve_model_data_config
 
@@ -460,7 +476,9 @@ def extract_pretrained_features(
     return features
 
 
-def siglip_embedding(image: Image.Image, model: object, processor: object, device: torch.device) -> torch.Tensor:
+def siglip_embedding(
+    image: Image.Image, model: object, processor: object, device: torch.device
+) -> torch.Tensor:
     inputs = processor(text=[""], images=image, return_tensors="pt")
     inputs = {k: v.to(device) if torch.is_tensor(v) else v for k, v in inputs.items()}
 
@@ -499,7 +517,9 @@ def compute_siglip_scores(
     }
 
 
-def ensure_tensor(image_tensor: torch.Tensor | None, image_path: Path | None, device: torch.device) -> torch.Tensor | None:
+def ensure_tensor(
+    image_tensor: torch.Tensor | None, image_path: Path | None, device: torch.device
+) -> torch.Tensor | None:
     if image_tensor is not None or image_path is None:
         return image_tensor
 
@@ -562,7 +582,7 @@ def parse_timm_encoders(specs: Sequence[str] | None) -> dict[str, str]:
     return encoders
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Compute FR/NR/backbone/SigLIP features for SR images and save one CSV. "
@@ -574,7 +594,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sr-dirs",
         nargs="+",
-        required=True,
+        default=None,
         metavar="METHOD=DIR",
         help="One or more SR folders. Example: --sr-dirs SwinIR=/data/sr/swinir ATD=/data/sr/atd",
     )
@@ -603,7 +623,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--features",
         default=",".join(DEFAULT_FEATURES),
-        help="Comma-separated subset of features: fr,nr,vgg,resnet,timm,siglip,gaussian,uniform.",
+        help=(
+            "Comma-separated subset of features: fr,nr,vgg,resnet,timm,"
+            "ref-vgg,ref-resnet,ref-timm,siglip,gaussian,uniform."
+        ),
+    )
+    parser.add_argument(
+        "--embedding-reference",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Reference name to use for ref-vgg/ref-resnet/ref-timm embeddings. "
+            "It must match a --ref-dirs name or a sample ref_paths key."
+        ),
     )
     parser.add_argument(
         "--fr-metrics",
@@ -699,7 +731,7 @@ def parse_args() -> argparse.Namespace:
         help="Logging level.",
     )
 
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def resolve_device(raw_device: str) -> torch.device:
@@ -718,8 +750,12 @@ def maybe_raise_or_warn(message: str, strict: bool) -> None:
     LOGGER.warning(message)
 
 
-def main() -> None:
-    args = parse_args()
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    samples: Sequence[Mapping[str, object]] | None = None,
+) -> None:
+    args = parse_args(argv)
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(levelname)s: %(message)s")
     require_feature_dependencies()
 
@@ -729,11 +765,14 @@ def main() -> None:
     timm_encoders = parse_timm_encoders(args.timm_encoders)
     device = resolve_device(args.device)
 
-    sr_dirs = parse_named_directories(args.sr_dirs, "--sr-dirs")
+    sr_dirs = parse_named_directories(args.sr_dirs or (), "--sr-dirs")
     ref_dirs = parse_named_directories(args.ref_dirs, "--ref-dirs")
 
-    require_existing_directories(sr_dirs, "--sr-dirs")
-    require_existing_directories(ref_dirs, "--ref-dirs")
+    if samples is None:
+        if not sr_dirs:
+            raise ValueError("--sr-dirs is required when samples are not supplied")
+        require_existing_directories(sr_dirs, "--sr-dirs")
+        require_existing_directories(ref_dirs, "--ref-dirs")
 
     gt_index: DirectoryIndex | None = None
     if args.gt_dir is not None:
@@ -752,20 +791,51 @@ def main() -> None:
     NOISE_COMPONENTS = args.noise_components
     NOISE_SEED = args.noise_seed
 
-    if "siglip" in requested_features and lr_index is None:
-        raise ValueError("SigLIP requires --lr-dir")
+    if "siglip" in requested_features and lr_index is None and samples is None:
+        raise ValueError("SigLIP requires --lr-dir or samples with lr_path")
 
-    if "fr" in requested_features and gt_index is None and not ref_dirs:
-        raise ValueError("FR metrics require at least one reference directory: --gt-dir and/or --ref-dirs")
+    if "fr" in requested_features and gt_index is None and not ref_dirs and samples is None:
+        raise ValueError("FR metrics require --gt-dir, --ref-dirs, or sample reference paths")
 
-    if "timm" in requested_features and not timm_encoders:
+    reference_features = {"ref-vgg", "ref-resnet", "ref-timm"}.intersection(requested_features)
+    if reference_features and not args.embedding_reference:
+        raise ValueError(
+            "Reference embedding extraction requires --embedding-reference "
+            "(or features.common.embedding_reference in a pipeline config)"
+        )
+    if reference_features and samples is None and args.embedding_reference not in ref_dirs:
+        raise ValueError(
+            f"Embedding reference '{args.embedding_reference}' is not present in --ref-dirs"
+        )
+
+    if {"timm", "ref-timm"}.intersection(requested_features) and not timm_encoders:
         raise ValueError("timm feature extraction requires at least one --timm-encoders entry")
 
-    sr_indices = {name: DirectoryIndex(directory) for name, directory in sr_dirs.items()}
-    ref_indices = {name: DirectoryIndex(directory) for name, directory in ref_dirs.items()}
+    work_items: list[dict[str, object]] = []
+    if samples is not None:
+        work_items = [dict(sample) for sample in samples]
+    else:
+        sr_indices = {name: DirectoryIndex(directory) for name, directory in sr_dirs.items()}
+        ref_indices = {name: DirectoryIndex(directory) for name, directory in ref_dirs.items()}
+        for sr_method, sr_index in sr_indices.items():
+            for sr_path in sr_index.files:
+                item: dict[str, object] = {
+                    "sample_id": f"{sr_method}:{sr_path.stem}",
+                    "method": sr_method,
+                    "sr_path": str(sr_path),
+                }
+                if gt_index is not None:
+                    item["hr_path"] = gt_index.find_same_name(sr_path)
+                if lr_index is not None:
+                    item["lr_path"] = lr_index.find_same_name(sr_path)
+                item["ref_paths"] = {
+                    ref_name: ref_index.find_ref_name(sr_path, sr_method=sr_method, ref_name=ref_name)
+                    for ref_name, ref_index in ref_indices.items()
+                }
+                work_items.append(item)
 
-    total_sr_images = sum(len(index.files) for index in sr_indices.values())
-    LOGGER.info("Found %d SR images across %d methods", total_sr_images, len(sr_indices))
+    total_sr_images = len(work_items)
+    LOGGER.info("Found %d SR samples", total_sr_images)
 
     fr_models: dict[str, object] | None = None
     if "fr" in requested_features:
@@ -777,16 +847,16 @@ def main() -> None:
 
     vgg_model: torch.nn.Module | None = None
     vgg_transform: transforms.Compose | None = None
-    if "vgg" in requested_features:
+    if {"vgg", "ref-vgg"}.intersection(requested_features):
         vgg_model, vgg_transform = init_vgg(device)
 
     resnet_model: torch.nn.Module | None = None
     resnet_transform: transforms.Compose | None = None
-    if "resnet" in requested_features:
+    if {"resnet", "ref-resnet"}.intersection(requested_features):
         resnet_model, resnet_transform = init_resnet(device)
 
     timm_models: dict[str, tuple[torch.nn.Module, object]] = {}
-    if "timm" in requested_features:
+    if {"timm", "ref-timm"}.intersection(requested_features):
         for encoder_name, model_name in timm_encoders.items():
             timm_models[encoder_name] = init_timm_encoder(
                 model_name,
@@ -803,227 +873,369 @@ def main() -> None:
     processed = 0
     profiler = FeatureProfiler() if args.profile or args.profile_flops else None
 
-    for sr_method, sr_index in sr_indices.items():
-        LOGGER.info("Processing SR method '%s' (%d images)", sr_method, len(sr_index.files))
+    for item in work_items:
+        sr_method = str(item.get("method") or item.get("sr_method") or "")
+        sr_path = Path(str(item["sr_path"])).expanduser().resolve()
+        processed += 1
+        LOGGER.info("[%d/%d] %s/%s", processed, total_sr_images, sr_method, sr_path.name)
 
-        for sr_path in sr_index.files:
-            processed += 1
-            LOGGER.info("[%d/%d] %s/%s", processed, total_sr_images, sr_method, sr_path.name)
+        try:
+            sr_image = load_image_rgb(sr_path)
+        except Exception as exc:
+            maybe_raise_or_warn(f"Failed to load SR image {sr_path}: {exc}", args.strict)
+            continue
 
-            try:
-                sr_image = load_image_rgb(sr_path)
-            except Exception as exc:
-                maybe_raise_or_warn(f"Failed to load SR image {sr_path}: {exc}", args.strict)
-                continue
+        sr_tensor = image_to_tensor(sr_image, device)
 
-            sr_tensor = image_to_tensor(sr_image, device)
+        row: dict[str, float] = {
+            "sample_id": str(item.get("sample_id") or f"{sr_method}:{sr_path.stem}"),
+            "sr_method": sr_method,
+            "sr_filename": sr_path.name,
+            "sr_path": csv_path(sr_path),
+        }
+        for metadata_key in ("dataset", "test_case", "rel_path"):
+            if item.get(metadata_key) is not None:
+                row[metadata_key] = str(item[metadata_key])
 
-            row: dict[str, float] = {
-                "sample_id": f"{sr_method}:{sr_path.stem}",
-                "sr_method": sr_method,
-                "sr_filename": sr_path.name,
-                "sr_path": csv_path(sr_path),
-            }
+        gt_value = item.get("hr_path") or item.get("gt_path")
+        gt_path = Path(str(gt_value)).expanduser().resolve() if gt_value else None
+        if gt_path is not None:
+            row["gt_path"] = csv_path(gt_path)
 
-            gt_path: Path | None = None
-            if gt_index is not None:
-                gt_path = gt_index.find_same_name(sr_path)
-                row["gt_path"] = csv_path(gt_path)
+        lr_value = item.get("lr_path")
+        lr_path = Path(str(lr_value)).expanduser().resolve() if lr_value else None
+        if lr_path is not None:
+            row["lr_path"] = csv_path(lr_path)
 
-            lr_path: Path | None = None
-            if lr_index is not None:
-                lr_path = lr_index.find_same_name(sr_path)
-                row["lr_path"] = csv_path(lr_path)
+        reference_image: Image.Image | None = None
+        if reference_features:
+            ref_value = dict(item.get("ref_paths") or {}).get(args.embedding_reference)
+            ref_path = Path(str(ref_value)).expanduser().resolve() if ref_value else None
+            if ref_path is None:
+                maybe_raise_or_warn(
+                    f"Missing embedding reference '{args.embedding_reference}' for {sr_path.name}",
+                    args.strict,
+                )
+            else:
+                try:
+                    reference_image = load_image_rgb(ref_path)
+                except Exception as exc:
+                    maybe_raise_or_warn(
+                        f"Failed to load embedding reference {ref_path}: {exc}",
+                        args.strict,
+                    )
 
-            if "nr" in requested_features and nr_models is not None:
-                for metric_name, model in nr_models.items():
-                    try:
-                        row[metric_name] = timed_call(
+        if "nr" in requested_features and nr_models is not None:
+            for metric_name, model in nr_models.items():
+                try:
+                    row[metric_name] = timed_call(
+                        profiler,
+                        metric_name,
+                        lambda model=model, sr_tensor=sr_tensor: float(model(sr_tensor).item()),
+                        device,
+                    )
+                    if args.profile_flops:
+                        profile_torch_flops(
                             profiler,
                             metric_name,
-                            lambda model=model, sr_tensor=sr_tensor: float(model(sr_tensor).item()),
+                            lambda model=model, sr_tensor=sr_tensor: model(sr_tensor),
+                            device,
+                        )
+                except Exception as exc:
+                    maybe_raise_or_warn(
+                        f"NR metric '{metric_name}' failed on {sr_path.name}: {exc}",
+                        args.strict,
+                    )
+                    row[metric_name] = np.nan
+
+        if "fr" in requested_features and fr_models is not None:
+            fr_targets: list[tuple[str, Path | None, str]] = []
+            if gt_path is not None:
+                fr_targets.append(("gt", gt_path, "sample"))
+
+            for ref_name, ref_value in dict(item.get("ref_paths") or {}).items():
+                ref_path = Path(str(ref_value)).expanduser().resolve() if ref_value else None
+                fr_targets.append((str(ref_name), ref_path, "sample"))
+
+            for ref_name, ref_path, match_mode in fr_targets:
+                if ref_path is None:
+                    maybe_raise_or_warn(
+                        f"Missing FR reference '{ref_name}' for {sr_path.name} ({match_mode} match)",
+                        args.strict,
+                    )
+                    for metric_name in fr_metrics:
+                        row[f"{metric_name}_{ref_name}"] = np.nan
+                    continue
+
+                try:
+                    ref_image = load_image_rgb(ref_path)
+                    sr_image_fr, ref_image_fr = align_fr_images(
+                        sr_image=sr_image,
+                        ref_image=ref_image,
+                        sr_path=sr_path,
+                        ref_path=ref_path,
+                        ref_name=ref_name,
+                        strict=args.strict,
+                    )
+                    if sr_image_fr.size == sr_image.size:
+                        sr_tensor_fr = sr_tensor
+                    else:
+                        sr_tensor_fr = image_to_tensor(sr_image_fr, device)
+                    ref_tensor = image_to_tensor(ref_image_fr, device)
+                except Exception as exc:
+                    maybe_raise_or_warn(
+                        f"Failed to prepare FR pair ({sr_path.name}, {ref_path.name}): {exc}",
+                        args.strict,
+                    )
+                    for metric_name in fr_metrics:
+                        row[f"{metric_name}_{ref_name}"] = np.nan
+                    continue
+
+                for metric_name, model in fr_models.items():
+                    out_col = f"{metric_name}_{ref_name}"
+                    try:
+                        row[out_col] = timed_call(
+                            profiler,
+                            out_col,
+                            lambda model=model, sr_tensor_fr=sr_tensor_fr, ref_tensor=ref_tensor: float(
+                                model(sr_tensor_fr, ref_tensor).item()
+                            ),
                             device,
                         )
                         if args.profile_flops:
                             profile_torch_flops(
                                 profiler,
-                                metric_name,
-                                lambda model=model, sr_tensor=sr_tensor: model(sr_tensor),
-                                device,
-                            )
-                    except Exception as exc:
-                        maybe_raise_or_warn(
-                            f"NR metric '{metric_name}' failed on {sr_path.name}: {exc}",
-                            args.strict,
-                        )
-                        row[metric_name] = np.nan
-
-            if "fr" in requested_features and fr_models is not None:
-                fr_targets: list[tuple[str, Path | None, str]] = []
-                if gt_index is not None:
-                    fr_targets.append(("gt", gt_path, "same-name"))
-
-                for ref_name, ref_index in ref_indices.items():
-                    ref_path = ref_index.find_ref_name(sr_path, sr_method=sr_method, ref_name=ref_name)
-                    fr_targets.append((ref_name, ref_path, "suffix"))
-
-                for ref_name, ref_path, match_mode in fr_targets:
-                    if ref_path is None:
-                        maybe_raise_or_warn(
-                            f"Missing FR reference '{ref_name}' for {sr_path.name} ({match_mode} match)",
-                            args.strict,
-                        )
-                        for metric_name in fr_metrics:
-                            row[f"{metric_name}_{ref_name}"] = np.nan
-                        continue
-
-                    try:
-                        ref_image = load_image_rgb(ref_path)
-                        sr_image_fr, ref_image_fr = align_fr_images(
-                            sr_image=sr_image,
-                            ref_image=ref_image,
-                            sr_path=sr_path,
-                            ref_path=ref_path,
-                            ref_name=ref_name,
-                            strict=args.strict,
-                        )
-                        if sr_image_fr.size == sr_image.size:
-                            sr_tensor_fr = sr_tensor
-                        else:
-                            sr_tensor_fr = image_to_tensor(sr_image_fr, device)
-                        ref_tensor = image_to_tensor(ref_image_fr, device)
-                    except Exception as exc:
-                        maybe_raise_or_warn(
-                            f"Failed to prepare FR pair ({sr_path.name}, {ref_path.name}): {exc}",
-                            args.strict,
-                        )
-                        for metric_name in fr_metrics:
-                            row[f"{metric_name}_{ref_name}"] = np.nan
-                        continue
-
-                    for metric_name, model in fr_models.items():
-                        out_col = f"{metric_name}_{ref_name}"
-                        try:
-                            row[out_col] = timed_call(
-                                profiler,
                                 out_col,
-                                lambda model=model, sr_tensor_fr=sr_tensor_fr, ref_tensor=ref_tensor: float(
-                                    model(sr_tensor_fr, ref_tensor).item()
+                                lambda model=model, sr_tensor_fr=sr_tensor_fr, ref_tensor=ref_tensor: model(
+                                    sr_tensor_fr, ref_tensor
                                 ),
                                 device,
                             )
-                            if args.profile_flops:
-                                profile_torch_flops(
-                                    profiler,
-                                    out_col,
-                                    lambda model=model, sr_tensor_fr=sr_tensor_fr, ref_tensor=ref_tensor: model(
-                                        sr_tensor_fr, ref_tensor
-                                    ),
-                                    device,
-                                )
-                        except Exception as exc:
-                            maybe_raise_or_warn(
-                                f"FR metric '{metric_name}' failed on {sr_path.name} vs {ref_path.name}: {exc}",
-                                args.strict,
-                            )
-                            row[out_col] = np.nan
-                
-            if "vgg" in requested_features and vgg_model is not None and vgg_transform is not None:
-                try:
-                    vgg_features = timed_call(
+                    except Exception as exc:
+                        maybe_raise_or_warn(
+                            f"FR metric '{metric_name}' failed on {sr_path.name} vs {ref_path.name}: {exc}",
+                            args.strict,
+                        )
+                        row[out_col] = np.nan
+
+        if "vgg" in requested_features and vgg_model is not None and vgg_transform is not None:
+            try:
+                vgg_features = timed_call(
+                    profiler,
+                    "vgg",
+                    lambda sr_image=sr_image, vgg_model=vgg_model, vgg_transform=vgg_transform: (
+                        extract_pretrained_features(sr_image, vgg_model, vgg_transform, device)
+                    ),
+                    device,
+                )
+                if profiler is not None:
+                    profiler.records["vgg"]["feature_count"] = float(len(vgg_features))
+                if args.profile_flops:
+                    profile_torch_flops(
                         profiler,
                         "vgg",
                         lambda sr_image=sr_image, vgg_model=vgg_model, vgg_transform=vgg_transform: (
                             extract_pretrained_features(sr_image, vgg_model, vgg_transform, device)
                         ),
                         device,
+                        feature_count=len(vgg_features),
                     )
-                    if profiler is not None:
-                        profiler.records["vgg"]["feature_count"] = float(len(vgg_features))
-                    if args.profile_flops:
-                        profile_torch_flops(
-                            profiler,
-                            "vgg",
-                            lambda sr_image=sr_image, vgg_model=vgg_model, vgg_transform=vgg_transform: (
-                                extract_pretrained_features(sr_image, vgg_model, vgg_transform, device)
-                            ),
-                            device,
-                            feature_count=len(vgg_features),
-                        )
-                    for index, value in enumerate(vgg_features):
-                        row[f"vgg_{index:05d}"] = float(value)
-                except Exception as exc:
-                    maybe_raise_or_warn(f"VGG extraction failed on {sr_path.name}: {exc}", args.strict)
+                for index, value in enumerate(vgg_features):
+                    row[f"vgg_{index:05d}"] = float(value)
+            except Exception as exc:
+                maybe_raise_or_warn(f"VGG extraction failed on {sr_path.name}: {exc}", args.strict)
 
-            if "resnet" in requested_features and resnet_model is not None and resnet_transform is not None:
-                try:
-                    resnet_features = timed_call(
+        if "resnet" in requested_features and resnet_model is not None and resnet_transform is not None:
+            try:
+                resnet_features = timed_call(
+                    profiler,
+                    "resnet",
+                    lambda sr_image=sr_image, resnet_model=resnet_model, resnet_transform=resnet_transform: (
+                        extract_pretrained_features(sr_image, resnet_model, resnet_transform, device)
+                    ),
+                    device,
+                )
+                if profiler is not None:
+                    profiler.records["resnet"]["feature_count"] = float(len(resnet_features))
+                if args.profile_flops:
+                    profile_torch_flops(
                         profiler,
                         "resnet",
                         lambda sr_image=sr_image, resnet_model=resnet_model, resnet_transform=resnet_transform: (
                             extract_pretrained_features(sr_image, resnet_model, resnet_transform, device)
                         ),
                         device,
+                        feature_count=len(resnet_features),
+                    )
+                for index, value in enumerate(resnet_features):
+                    row[f"resnet_{index:05d}"] = float(value)
+            except Exception as exc:
+                maybe_raise_or_warn(f"ResNet extraction failed on {sr_path.name}: {exc}", args.strict)
+
+        if "timm" in requested_features and timm_models:
+            for encoder_name, (timm_model, timm_transform) in timm_models.items():
+                prefix = safe_column_prefix(encoder_name)
+                try:
+                    timm_features = timed_call(
+                        profiler,
+                        prefix,
+                        lambda sr_image=sr_image, timm_model=timm_model, timm_transform=timm_transform: (
+                            extract_pretrained_features(sr_image, timm_model, timm_transform, device)
+                        ),
+                        device,
                     )
                     if profiler is not None:
-                        profiler.records["resnet"]["feature_count"] = float(len(resnet_features))
+                        profiler.records[prefix]["feature_count"] = float(len(timm_features))
                     if args.profile_flops:
                         profile_torch_flops(
-                            profiler,
-                            "resnet",
-                            lambda sr_image=sr_image, resnet_model=resnet_model, resnet_transform=resnet_transform: (
-                                extract_pretrained_features(sr_image, resnet_model, resnet_transform, device)
-                            ),
-                            device,
-                            feature_count=len(resnet_features),
-                        )
-                    for index, value in enumerate(resnet_features):
-                        row[f"resnet_{index:05d}"] = float(value)
-                except Exception as exc:
-                    maybe_raise_or_warn(f"ResNet extraction failed on {sr_path.name}: {exc}", args.strict)
-
-            if "timm" in requested_features and timm_models:
-                for encoder_name, (timm_model, timm_transform) in timm_models.items():
-                    prefix = safe_column_prefix(encoder_name)
-                    try:
-                        timm_features = timed_call(
                             profiler,
                             prefix,
                             lambda sr_image=sr_image, timm_model=timm_model, timm_transform=timm_transform: (
                                 extract_pretrained_features(sr_image, timm_model, timm_transform, device)
                             ),
                             device,
+                            feature_count=len(timm_features),
                         )
-                        if profiler is not None:
-                            profiler.records[prefix]["feature_count"] = float(len(timm_features))
-                        if args.profile_flops:
-                            profile_torch_flops(
-                                profiler,
-                                prefix,
-                                lambda sr_image=sr_image, timm_model=timm_model, timm_transform=timm_transform: (
-                                    extract_pretrained_features(sr_image, timm_model, timm_transform, device)
-                                ),
-                                device,
-                                feature_count=len(timm_features),
-                            )
-                        for index, value in enumerate(timm_features):
-                            row[f"{prefix}_{index:05d}"] = float(value)
-                    except Exception as exc:
-                        maybe_raise_or_warn(
-                            f"timm encoder '{encoder_name}' extraction failed on {sr_path.name}: {exc}",
-                            args.strict,
-                        )
+                    for index, value in enumerate(timm_features):
+                        row[f"{prefix}_{index:05d}"] = float(value)
+                except Exception as exc:
+                    maybe_raise_or_warn(
+                        f"timm encoder '{encoder_name}' extraction failed on {sr_path.name}: {exc}",
+                        args.strict,
+                    )
 
-            if "siglip" in requested_features and siglip_model is not None and siglip_processor is not None:
-                if lr_path is None:
-                    maybe_raise_or_warn(f"Missing LR image for SigLIP: {sr_path.name}", args.strict)
-                    row["content_fidelity"] = np.nan
-                    row["perceptual_enhancement"] = np.nan
-                    row["final_rr_score"] = np.nan
-                else:
-                    try:
-                        lr_image = load_image_rgb(lr_path)
-                        siglip_scores = timed_call(
+        if (
+            "ref-vgg" in requested_features
+            and reference_image is not None
+            and vgg_model is not None
+            and vgg_transform is not None
+        ):
+            try:
+                ref_vgg_features = timed_call(
+                    profiler,
+                    "ref_vgg",
+                    lambda reference_image=reference_image: extract_pretrained_features(
+                        reference_image, vgg_model, vgg_transform, device
+                    ),
+                    device,
+                )
+                if profiler is not None:
+                    profiler.records["ref_vgg"]["feature_count"] = float(len(ref_vgg_features))
+                if args.profile_flops:
+                    profile_torch_flops(
+                        profiler,
+                        "ref_vgg",
+                        lambda reference_image=reference_image: extract_pretrained_features(
+                            reference_image, vgg_model, vgg_transform, device
+                        ),
+                        device,
+                        feature_count=len(ref_vgg_features),
+                    )
+                for index, value in enumerate(ref_vgg_features):
+                    row[f"ref_vgg_{index:05d}"] = float(value)
+            except Exception as exc:
+                maybe_raise_or_warn(
+                    f"Reference VGG extraction failed on {sr_path.name}: {exc}", args.strict
+                )
+
+        if (
+            "ref-resnet" in requested_features
+            and reference_image is not None
+            and resnet_model is not None
+            and resnet_transform is not None
+        ):
+            try:
+                ref_resnet_features = timed_call(
+                    profiler,
+                    "ref_resnet",
+                    lambda reference_image=reference_image: extract_pretrained_features(
+                        reference_image, resnet_model, resnet_transform, device
+                    ),
+                    device,
+                )
+                if profiler is not None:
+                    profiler.records["ref_resnet"]["feature_count"] = float(
+                        len(ref_resnet_features)
+                    )
+                if args.profile_flops:
+                    profile_torch_flops(
+                        profiler,
+                        "ref_resnet",
+                        lambda reference_image=reference_image: extract_pretrained_features(
+                            reference_image, resnet_model, resnet_transform, device
+                        ),
+                        device,
+                        feature_count=len(ref_resnet_features),
+                    )
+                for index, value in enumerate(ref_resnet_features):
+                    row[f"ref_resnet_{index:05d}"] = float(value)
+            except Exception as exc:
+                maybe_raise_or_warn(
+                    f"Reference ResNet extraction failed on {sr_path.name}: {exc}", args.strict
+                )
+
+        if "ref-timm" in requested_features and reference_image is not None and timm_models:
+            for encoder_name, (timm_model, timm_transform) in timm_models.items():
+                prefix = f"ref_{safe_column_prefix(encoder_name)}"
+                try:
+                    ref_timm_features = timed_call(
+                        profiler,
+                        prefix,
+                        lambda reference_image=reference_image, timm_model=timm_model, timm_transform=timm_transform: (
+                            extract_pretrained_features(
+                                reference_image, timm_model, timm_transform, device
+                            )
+                        ),
+                        device,
+                    )
+                    if profiler is not None:
+                        profiler.records[prefix]["feature_count"] = float(len(ref_timm_features))
+                    if args.profile_flops:
+                        profile_torch_flops(
+                            profiler,
+                            prefix,
+                            lambda reference_image=reference_image, timm_model=timm_model, timm_transform=timm_transform: (
+                                extract_pretrained_features(
+                                    reference_image, timm_model, timm_transform, device
+                                )
+                            ),
+                            device,
+                            feature_count=len(ref_timm_features),
+                        )
+                    for index, value in enumerate(ref_timm_features):
+                        row[f"{prefix}_{index:05d}"] = float(value)
+                except Exception as exc:
+                    maybe_raise_or_warn(
+                        f"Reference timm encoder '{encoder_name}' extraction failed on "
+                        f"{sr_path.name}: {exc}",
+                        args.strict,
+                    )
+
+        if "siglip" in requested_features and siglip_model is not None and siglip_processor is not None:
+            if lr_path is None:
+                maybe_raise_or_warn(f"Missing LR image for SigLIP: {sr_path.name}", args.strict)
+                row["content_fidelity"] = np.nan
+                row["perceptual_enhancement"] = np.nan
+                row["final_rr_score"] = np.nan
+            else:
+                try:
+                    lr_image = load_image_rgb(lr_path)
+                    siglip_scores = timed_call(
+                        profiler,
+                        "siglip",
+                        lambda lr_image=lr_image, sr_image=sr_image: compute_siglip_scores(
+                            lr_image=lr_image,
+                            sr_image=sr_image,
+                            model=siglip_model,
+                            processor=siglip_processor,
+                            device=device,
+                            alpha=args.siglip_alpha,
+                        ),
+                        device,
+                        feature_count=3,
+                    )
+                    if args.profile_flops:
+                        profile_torch_flops(
                             profiler,
                             "siglip",
                             lambda lr_image=lr_image, sr_image=sr_image: compute_siglip_scores(
@@ -1037,29 +1249,14 @@ def main() -> None:
                             device,
                             feature_count=3,
                         )
-                        if args.profile_flops:
-                            profile_torch_flops(
-                                profiler,
-                                "siglip",
-                                lambda lr_image=lr_image, sr_image=sr_image: compute_siglip_scores(
-                                    lr_image=lr_image,
-                                    sr_image=sr_image,
-                                    model=siglip_model,
-                                    processor=siglip_processor,
-                                    device=device,
-                                    alpha=args.siglip_alpha,
-                                ),
-                                device,
-                                feature_count=3,
-                            )
-                        row.update(siglip_scores)
-                    except Exception as exc:
-                        maybe_raise_or_warn(f"SigLIP extraction failed on {sr_path.name}: {exc}", args.strict)
-                        row["content_fidelity"] = np.nan
-                        row["perceptual_enhancement"] = np.nan
-                        row["final_rr_score"] = np.nan
+                    row.update(siglip_scores)
+                except Exception as exc:
+                    maybe_raise_or_warn(f"SigLIP extraction failed on {sr_path.name}: {exc}", args.strict)
+                    row["content_fidelity"] = np.nan
+                    row["perceptual_enhancement"] = np.nan
+                    row["final_rr_score"] = np.nan
 
-            rows.append(row)
+        rows.append(row)
 
     output_path = Path(args.output).expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1078,7 +1275,9 @@ def main() -> None:
                 samples=max(len(rows), 1),
             )
             if profiler is not None:
-                profiler.record_flops("gaussian", float(len(rows) * NOISE_COMPONENTS), samples=max(len(rows), 1))
+                profiler.record_flops(
+                    "gaussian", float(len(rows) * NOISE_COMPONENTS), samples=max(len(rows), 1)
+                )
             sample = pd.DataFrame(sample, columns=[f"gaussian_{i}" for i in range(NOISE_COMPONENTS)])
             frame = pd.concat([frame, sample], axis=1)
         except Exception as exc:
@@ -1096,7 +1295,9 @@ def main() -> None:
                 samples=max(len(rows), 1),
             )
             if profiler is not None:
-                profiler.record_flops("uniform", float(len(rows) * NOISE_COMPONENTS), samples=max(len(rows), 1))
+                profiler.record_flops(
+                    "uniform", float(len(rows) * NOISE_COMPONENTS), samples=max(len(rows), 1)
+                )
             sample = pd.DataFrame(sample, columns=[f"uniform_{i}" for i in range(NOISE_COMPONENTS)])
             frame = pd.concat([frame, sample], axis=1)
         except Exception as exc:

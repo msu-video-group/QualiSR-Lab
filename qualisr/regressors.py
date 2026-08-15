@@ -9,9 +9,9 @@ import os
 import re
 import time
 import warnings
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from fnmatch import fnmatch
-from functools import reduce
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -116,11 +116,7 @@ def configured_pretty_names(cfg: dict[str, Any] | None = None) -> dict[str, str]
         if isinstance(section_names, dict):
             names.update({str(key): str(value) for key, value in section_names.items()})
 
-    flat_names = {
-        str(key): str(value)
-        for key, value in pretty_cfg.items()
-        if isinstance(value, str)
-    }
+    flat_names = {str(key): str(value) for key, value in pretty_cfg.items() if isinstance(value, str)}
     names.update(flat_names)
     return names
 
@@ -245,149 +241,31 @@ def relativize_path_columns(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def sample_name_from_image_path(value: object, cfg: dict[str, Any]) -> str:
-    if pd.isna(value):
-        raise ValueError("Labels contain an empty image path")
-
-    raw = str(value).strip().replace("\\", "/")
-    if not raw:
-        raise ValueError("Labels contain an empty image path")
-
-    parts = [part for part in raw.split("/") if part]
-    if "sr" in [part.lower() for part in parts]:
-        sr_index = next(index for index, part in enumerate(parts) if part.lower() == "sr")
-        parts = parts[sr_index + 1 :]
-
-    if len(parts) < 2:
-        raise ValueError(f"Could not derive sample name from image path: {value!r}")
-
-    method = parts[-2]
-    stem = Path(parts[-1]).stem
-    return f"{method}/{stem}{cfg['dataset']['filename_suffix']}"
+SAMPLE_ID_COLUMN = "sample_id"
+SCORE_COLUMN = "score"
+DATASET_COLUMN = "dataset"
+GROUP_COLUMN = "test_case"
+FEATURE_METADATA_COLUMNS = {
+    SAMPLE_ID_COLUMN,
+    DATASET_COLUMN,
+    GROUP_COLUMN,
+    "rel_path",
+    "sr_method",
+    "sr_filename",
+    "sr_path",
+    "gt_path",
+    "lr_path",
+    "set_type",
+}
 
 
-def normalize_label_method(value: object, cfg: dict[str, Any]) -> str:
-    if pd.isna(value):
-        raise ValueError("Labels contain an empty method value")
-
-    raw = str(value).strip()
-    if not raw:
-        raise ValueError("Labels contain an empty method value")
-
-    aliases = {
-        "pasd": "PASD",
-        "realesrgan": "RealESRGAN",
-        "real_esrgan": "RealESRGAN",
-        "real-esrgan": "RealESRGAN",
-        "supir": "SUPIR",
-    }
-    aliases.update({str(k).lower(): str(v) for k, v in cfg["dataset"].get("method_aliases", {}).items()})
-    return aliases.get(raw.lower(), raw)
-
-
-def sample_name_from_label_parts(row: pd.Series, cfg: dict[str, Any]) -> str:
-    dataset_cfg = cfg["dataset"]
-    test_case_col = dataset_cfg.get("test_case_column", "test_case")
-    method_col = dataset_cfg.get("label_method_column", "method")
-
-    if test_case_col not in row.index or method_col not in row.index:
-        raise ValueError(
-            "Labels contain an empty image path and fallback columns are missing. "
-            f"Expected '{test_case_col}' and '{method_col}'."
-        )
-
-    test_case = row[test_case_col]
-    if pd.isna(test_case) or not str(test_case).strip():
-        raise ValueError("Labels contain an empty test case value")
-
-    method = normalize_label_method(row[method_col], cfg)
-    stem = Path(str(test_case).strip()).stem
-    return f"{method}/{stem}{dataset_cfg['filename_suffix']}"
-
-
-def sample_name_from_label_row(row: pd.Series, cfg: dict[str, Any], image_col: str) -> str:
-    value = row.get(image_col)
-    if not pd.isna(value) and str(value).strip():
-        return sample_name_from_image_path(value, cfg)
-    return sample_name_from_label_parts(row, cfg)
-
-
-def load_scores(cfg: dict[str, Any]) -> pd.DataFrame:
-    labels_path = cfg["paths"].get("labels")
-    if labels_path is None:
-        raise KeyError("Config must define paths.labels")
-    scores = pd.read_csv(labels_path)
-
-    name_col = cfg["dataset"]["name_column"]
-    score_col = cfg["dataset"]["score_column"]
-
-    if name_col not in scores.columns:
-        image_col = cfg["dataset"].get("image_column", "image")
-        if image_col not in scores.columns:
-            try:
-                scores[name_col] = scores.apply(lambda row: sample_name_from_label_parts(row, cfg), axis=1)
-            except ValueError as exc:
-                raise ValueError(
-                    f"Labels file must contain either '{name_col}' or '{image_col}' column, "
-                    "or fallback columns 'test_case' and 'method'."
-                ) from exc
-        else:
-            try:
-                scores[name_col] = scores.apply(
-                    lambda row: sample_name_from_label_row(row, cfg, image_col),
-                    axis=1,
-                )
-            except ValueError as exc:
-                raise ValueError(f"Could not derive sample names from labels file '{labels_path}': {exc}") from exc
-
-    if score_col not in scores.columns:
-        fallback = [c for c in ["score", "scores", "mos", "mos_norm", "score_norm"] if c in scores.columns]
-        if not fallback:
-            raise ValueError(
-                f"Scores file must contain '{score_col}' column. Available: {scores.columns.tolist()}"
-            )
-        scores = scores.rename(columns={fallback[0]: score_col})
-
-    return scores[[name_col, score_col]].copy()
-
-
-def build_sample_name(df: pd.DataFrame, cfg: dict[str, Any]) -> pd.Series:
-    method_col = cfg["dataset"]["sr_method_column"]
-    filename_col = cfg["dataset"]["sr_filename_column"]
-    suffix = cfg["dataset"]["filename_suffix"]
-
-    if method_col not in df.columns or filename_col not in df.columns:
-        raise ValueError(
-            f"Feature file must have '{method_col}' and '{filename_col}' columns. "
-            f"Got: {df.columns.tolist()}"
-        )
-
-    stem = df[filename_col].astype(str).str.rsplit(".", n=1).str[0]
-    return df[method_col].astype(str) + "/" + stem + suffix
-
-
-def resolve_feature_path(feat_name: str, cfg: dict[str, Any]) -> Path:
+def resolve_feature_path(feat_name: str, cfg: dict[str, Any], features_root: str | Path) -> Path:
     templates = cfg["features"]["feature_files"]
     if feat_name not in templates:
         raise KeyError(f"No path template configured for feature '{feat_name}'")
-
-    try:
-        pca_n = cfg["features"]["pca_n"]
-    except KeyError:
-        pca_n = 0
-
     return Path(
         templates[feat_name].format(
-            features_root=cfg["paths"]["features_root"],
-            pca_n=pca_n,
-        )
-    )
-
-
-def resolve_configured_path(path_template: str, cfg: dict[str, Any]) -> Path:
-    return Path(
-        path_template.format(
-            features_root=cfg["paths"]["features_root"],
+            features_root=features_root,
             pca_n=cfg["features"]["pca_n"],
         )
     )
@@ -395,70 +273,119 @@ def resolve_configured_path(path_template: str, cfg: dict[str, Any]) -> Path:
 
 def keep_requested_fr_columns(df: pd.DataFrame, refs: list[str]) -> pd.DataFrame:
     refs_lower = [r.lower() for r in refs]
-    keep_cols = ["name"]
+    keep_cols = [SAMPLE_ID_COLUMN]
     for col in df.columns:
-        if col == "name":
+        if col == SAMPLE_ID_COLUMN:
             continue
         if any(col.lower().endswith("_" + ref) for ref in refs_lower):
             keep_cols.append(col)
     return df[keep_cols]
 
 
-def load_feature_block(feat_name: str, cfg: dict[str, Any], valid_names: set[str]) -> pd.DataFrame:
-    path = resolve_feature_path(feat_name, cfg)
+def load_feature_block(
+    feat_name: str,
+    cfg: dict[str, Any],
+    features_root: str | Path,
+    sample_ids: set[str],
+) -> pd.DataFrame:
+    path = resolve_feature_path(feat_name, cfg, features_root)
     if not path.exists():
         raise FileNotFoundError(f"Feature file for '{feat_name}' not found: {path}")
 
     df = pd.read_csv(path)
-    df["name"] = build_sample_name(df, cfg)
+    if SAMPLE_ID_COLUMN not in df.columns:
+        raise ValueError(f"Feature file must contain '{SAMPLE_ID_COLUMN}': {path}")
+    if df[SAMPLE_ID_COLUMN].duplicated().any():
+        raise ValueError(f"Feature file contains duplicate sample IDs: {path}")
+    df = df[df[SAMPLE_ID_COLUMN].isin(sample_ids)].copy()
+    if set(df[SAMPLE_ID_COLUMN]) != sample_ids:
+        missing = sorted(sample_ids - set(df[SAMPLE_ID_COLUMN]))
+        raise ValueError(f"Feature file '{path}' is missing {len(missing)} samples; first: {missing[0]}")
 
-    drop_candidates = cfg["dataset"]["metadata_drop"]
-    drop_existing = [c for c in drop_candidates if c in df.columns]
+    drop_existing = [column for column in FEATURE_METADATA_COLUMNS - {SAMPLE_ID_COLUMN} if column in df]
     if drop_existing:
         df = df.drop(columns=drop_existing)
 
     if feat_name == "fr":
         df = keep_requested_fr_columns(df, cfg["features"]["fr_refs"])
+    return df
 
-    return df[df["name"].isin(valid_names)].copy()
 
-
-def load_stats_block(cfg: dict[str, Any], valid_names: set[str]) -> pd.DataFrame:
-    stats_path = resolve_feature_path("stats", cfg)
+def load_stats_block(
+    cfg: dict[str, Any],
+    features_root: str | Path,
+    sample_ids: set[str],
+) -> pd.DataFrame:
+    stats_path = resolve_feature_path("stats", cfg, features_root)
     if not stats_path.exists():
         raise FileNotFoundError(f"Stats file not found: {stats_path}")
 
     stats = pd.read_csv(stats_path)
-    requested = ["name"] + cfg["features"]["stats_columns"]
+    requested = [SAMPLE_ID_COLUMN] + cfg["features"]["stats_columns"]
     missing = [c for c in requested if c not in stats.columns]
     if missing:
         raise ValueError(f"Stats file is missing requested columns: {missing}")
+    stats = stats[stats[SAMPLE_ID_COLUMN].isin(sample_ids)][requested].copy()
+    if set(stats[SAMPLE_ID_COLUMN]) != sample_ids:
+        missing_ids = sorted(sample_ids - set(stats[SAMPLE_ID_COLUMN]))
+        raise ValueError(f"Stats file '{stats_path}' is missing {len(missing_ids)} samples; first: {missing_ids[0]}")
+    return stats
 
-    stats = stats[requested]
-    return stats[stats["name"].isin(valid_names)].copy()
 
+def build_dataset_group(cfg: dict[str, Any], samples: Sequence[Mapping[str, Any]]) -> pd.DataFrame:
+    dataset_names = {str(sample[DATASET_COLUMN]) for sample in samples}
+    feature_roots = {str(sample["features_root"]) for sample in samples}
+    if len(dataset_names) != 1 or len(feature_roots) != 1:
+        raise ValueError("A dataset feature group must have one dataset name and one features_root")
+    features_root = feature_roots.pop()
+    sample_ids = {str(sample[SAMPLE_ID_COLUMN]) for sample in samples}
+    dataset = pd.DataFrame(
+        {
+            SAMPLE_ID_COLUMN: [str(sample[SAMPLE_ID_COLUMN]) for sample in samples],
+            DATASET_COLUMN: [str(sample[DATASET_COLUMN]) for sample in samples],
+            GROUP_COLUMN: [str(sample[GROUP_COLUMN]) for sample in samples],
+            SCORE_COLUMN: [float(sample[SCORE_COLUMN]) for sample in samples],
+        }
+    )
 
-def build_dataset(cfg: dict[str, Any]) -> pd.DataFrame:
-    scores = load_scores(cfg)
-    valid_names = set(scores[cfg["dataset"]["name_column"]].tolist())
-
-    frames = [scores]
     if cfg["features"]["include_stats"]:
-        frames.append(load_stats_block(cfg, valid_names))
+        dataset = dataset.merge(
+            load_stats_block(cfg, features_root, sample_ids),
+            on=SAMPLE_ID_COLUMN,
+            how="inner",
+            validate="one_to_one",
+        )
 
     for feat_name in cfg["features"]["include"]:
-        frames.append(load_feature_block(feat_name, cfg, valid_names))
+        dataset = dataset.merge(
+            load_feature_block(feat_name, cfg, features_root, sample_ids),
+            on=SAMPLE_ID_COLUMN,
+            how="inner",
+            validate="one_to_one",
+        )
 
-    dataset = reduce(lambda left, right: pd.merge(left, right, on="name", how="inner"), frames)
-
-    try:
-        existing_excludes = [c for c in cfg["features"]["exclude_columns"] if c in dataset.columns]
-    except KeyError:
-        existing_excludes = []
+    existing_excludes = [c for c in cfg["features"]["exclude_columns"] if c in dataset.columns]
     if existing_excludes:
         dataset = dataset.drop(columns=existing_excludes)
+    return dataset.sort_values(SAMPLE_ID_COLUMN).reset_index(drop=True)
 
-    return dataset.sort_values("name").reset_index(drop=True)
+
+def build_dataset(cfg: dict[str, Any], samples: Sequence[Mapping[str, Any]]) -> pd.DataFrame:
+    if not samples:
+        raise ValueError("Regressor stage requires parsed dataset samples")
+    names = sorted({str(sample[DATASET_COLUMN]) for sample in samples})
+    frames = [
+        build_dataset_group(cfg, [sample for sample in samples if str(sample[DATASET_COLUMN]) == name])
+        for name in names
+    ]
+    feature_columns = [
+        set(frame.columns) - {SAMPLE_ID_COLUMN, DATASET_COLUMN, GROUP_COLUMN, SCORE_COLUMN}
+        for frame in frames
+    ]
+    if any(columns != feature_columns[0] for columns in feature_columns[1:]):
+        raise ValueError("All regressor datasets must provide the same feature columns")
+
+    return pd.concat(frames, ignore_index=True)
 
 
 def metric_comparison_column(item: dict[str, Any]) -> str:
@@ -489,41 +416,6 @@ def metric_comparison_label(item: dict[str, Any], column: str, cfg: dict[str, An
     return metric
 
 
-def load_metric_comparison_values(
-    item: dict[str, Any],
-    cfg: dict[str, Any],
-    target_names: pd.Series,
-) -> tuple[str, str, pd.Series]:
-    if "path" in item:
-        path = resolve_configured_path(item["path"], cfg)
-    else:
-        feature_name = item.get("feature")
-        if feature_name is None:
-            raise ValueError(f"Correlation metric item must define 'feature' or 'path': {item}")
-        path = resolve_feature_path(str(feature_name), cfg)
-
-    if not path.exists():
-        raise FileNotFoundError(f"Correlation metric feature file not found: {path}")
-
-    column = metric_comparison_column(item)
-    values = pd.read_csv(path)
-    values["name"] = build_sample_name(values, cfg)
-    if column not in values.columns:
-        raise ValueError(
-            f"Correlation metric column '{column}' not found in {path}. "
-            f"Available columns: {values.columns.tolist()}"
-        )
-
-    subset = values[["name", column]].copy()
-    if subset["name"].duplicated().any():
-        duplicates = sorted(subset.loc[subset["name"].duplicated(), "name"].unique().tolist())
-        raise ValueError(f"Correlation metric file {path} has duplicate sample names: {duplicates[:10]}")
-
-    aligned = target_names.to_frame(name="name").merge(subset, on="name", how="left")[column]
-    label = metric_comparison_label(item, column, cfg)
-    return label, column, aligned
-
-
 def normalize_metric_values(values: pd.Series, higher_is_better: bool) -> pd.Series:
     numeric = pd.to_numeric(values, errors="coerce")
     finite = numeric.replace([np.inf, -np.inf], np.nan).dropna()
@@ -543,22 +435,72 @@ def normalize_metric_values(values: pd.Series, higher_is_better: bool) -> pd.Ser
     return normalized
 
 
+def load_metric_comparison_data(
+    cfg: dict[str, Any],
+    samples: Sequence[Mapping[str, Any]],
+) -> pd.DataFrame:
+    comparison_cfg = cfg.get("correlation_metrics", {})
+    if not comparison_cfg.get("enabled", False):
+        return pd.DataFrame({SAMPLE_ID_COLUMN: [sample[SAMPLE_ID_COLUMN] for sample in samples]})
+
+    columns_by_feature: dict[str, list[str]] = {}
+    column_owners: dict[str, str] = {}
+    for item in comparison_cfg.get("items", []):
+        feature = str(item.get("feature") or "")
+        if not feature:
+            raise ValueError(f"Correlation metric item must define 'feature': {item}")
+        column = metric_comparison_column(item)
+        owner = column_owners.setdefault(column, feature)
+        if owner != feature:
+            raise ValueError(f"Correlation metric column '{column}' is configured for multiple features")
+        columns_by_feature.setdefault(feature, []).append(column)
+
+    frames = []
+    for name in sorted({str(sample[DATASET_COLUMN]) for sample in samples}):
+        group = [sample for sample in samples if str(sample[DATASET_COLUMN]) == name]
+        feature_roots = {str(sample["features_root"]) for sample in group}
+        if len(feature_roots) != 1:
+            raise ValueError(f"Dataset '{name}' must have one features_root")
+        features_root = feature_roots.pop()
+        sample_ids = {str(sample[SAMPLE_ID_COLUMN]) for sample in group}
+        frame = pd.DataFrame({SAMPLE_ID_COLUMN: sorted(sample_ids)})
+        for feature, columns in columns_by_feature.items():
+            path = resolve_feature_path(feature, cfg, features_root)
+            source = pd.read_csv(path)
+            requested = [SAMPLE_ID_COLUMN, *dict.fromkeys(columns)]
+            missing_columns = [column for column in requested if column not in source]
+            if missing_columns:
+                raise ValueError(f"Correlation metric file '{path}' is missing columns: {missing_columns}")
+            source = source[source[SAMPLE_ID_COLUMN].isin(sample_ids)][requested].copy()
+            if set(source[SAMPLE_ID_COLUMN]) != sample_ids:
+                missing_ids = sorted(sample_ids - set(source[SAMPLE_ID_COLUMN]))
+                raise ValueError(
+                    f"Correlation metric file '{path}' is missing {len(missing_ids)} samples; "
+                    f"first: {missing_ids[0]}"
+                )
+            frame = frame.merge(source, on=SAMPLE_ID_COLUMN, how="inner", validate="one_to_one")
+        frames.append(frame)
+    return pd.concat(frames, ignore_index=True)
+
+
 def compute_metric_comparisons(
     cfg: dict[str, Any],
-    dataset: pd.DataFrame,
+    validation: pd.DataFrame,
+    validation_sample_ids: pd.Series,
     y_test: pd.Series,
 ) -> list[dict[str, Any]]:
     comparison_cfg = cfg.get("correlation_metrics", {})
     if not comparison_cfg.get("enabled", False):
         return []
 
-    name_col = cfg["dataset"]["name_column"]
-    target_names = dataset.loc[y_test.index, name_col].reset_index(drop=True)
     target_scores = y_test.reset_index(drop=True)
+    validation = validation.set_index(SAMPLE_ID_COLUMN).loc[validation_sample_ids].reset_index()
 
     rows = []
     for item in comparison_cfg.get("items", []):
-        label, column, values = load_metric_comparison_values(item, cfg, target_names)
+        column = metric_comparison_column(item)
+        label = metric_comparison_label(item, column, cfg)
+        values = validation[column].reset_index(drop=True)
         higher_is_better = item.get("higher_is_better", True)
         normalized_values = normalize_metric_values(values, higher_is_better=higher_is_better)
 
@@ -583,36 +525,70 @@ def compute_metric_comparisons(
     return rows
 
 
-def build_group_keys(names: pd.Series, cfg: dict[str, Any]) -> pd.Series:
-    segment_idx = cfg["dataset"]["group_segment_index"]
-    remove_suffix = cfg["dataset"].get("group_remove_suffix", "")
-
-    def one_name_to_group(value: str) -> str:
-        parts = str(value).split("/")
-        key = parts[segment_idx] if len(parts) > segment_idx else Path(value).name
-        if remove_suffix and key.endswith(remove_suffix):
-            key = key[: -len(remove_suffix)]
-        return key
-
-    return names.map(one_name_to_group)
-
-
 def split_dataset(
     dataset: pd.DataFrame,
     cfg: dict[str, Any],
+    samples: Sequence[Mapping[str, Any]],
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
-    y = dataset[cfg["dataset"]["score_column"]]
-    X = dataset.drop(columns=[cfg["dataset"]["name_column"], cfg["dataset"]["score_column"]])
-    X = X.apply(pd.to_numeric, errors="raise")
+    usage_by_dataset: dict[str, dict[str, Any]] = {}
+    for sample in samples:
+        name = str(sample[DATASET_COLUMN])
+        usage = dict(sample["regressors"])
+        if name in usage_by_dataset and usage_by_dataset[name] != usage:
+            raise ValueError(f"Dataset '{name}' has inconsistent regressors configuration")
+        usage_by_dataset[name] = usage
 
-    groups = build_group_keys(dataset[cfg["dataset"]["name_column"]], cfg)
-    splitter = GroupShuffleSplit(n_splits=1, test_size=cfg["test_size"], random_state=cfg["seed"])
-    train_idx, test_idx = next(splitter.split(dataset, groups=groups))
+    train_indices: list[int] = []
+    validation_indices: list[int] = []
+    for name, group in dataset.groupby(DATASET_COLUMN, sort=True):
+        usage = usage_by_dataset[str(name)]
+        train = usage.get("train") is True
+        validate = usage.get("validate") is True
+        if not train and not validate:
+            continue
 
-    X_train = X.iloc[train_idx].copy()
-    X_test = X.iloc[test_idx].copy()
-    y_train = y.iloc[train_idx].copy()
-    y_test = y.iloc[test_idx].copy()
+        if train:
+            if "test_size" not in usage:
+                raise ValueError(f"Training dataset '{name}' must define regressors.test_size")
+            test_size = float(usage["test_size"])
+            if not 0.0 <= test_size < 1.0:
+                raise ValueError(f"Dataset '{name}' regressors.test_size must be in [0, 1)")
+            if not validate and test_size != 0.0:
+                raise ValueError(
+                    f"Training-only dataset '{name}' must set regressors.test_size to 0"
+                )
+            if test_size == 0.0:
+                train_indices.extend(group.index.tolist())
+            else:
+                splitter = GroupShuffleSplit(
+                    n_splits=1,
+                    test_size=test_size,
+                    random_state=cfg["seed"],
+                )
+                local_train, local_validation = next(
+                    splitter.split(group, groups=group[GROUP_COLUMN])
+                )
+                train_indices.extend(group.iloc[local_train].index.tolist())
+                validation_indices.extend(group.iloc[local_validation].index.tolist())
+        else:
+            if "test_size" in usage:
+                raise ValueError(
+                    f"Validation-only dataset '{name}' must not define regressors.test_size"
+                )
+            validation_indices.extend(group.index.tolist())
+
+    if not train_indices:
+        raise ValueError("At least one dataset must provide regressor training samples")
+    if not validation_indices:
+        raise ValueError("At least one dataset must provide regressor validation samples")
+
+    metadata = [SAMPLE_ID_COLUMN, DATASET_COLUMN, GROUP_COLUMN, SCORE_COLUMN]
+    X = dataset.drop(columns=metadata).apply(pd.to_numeric, errors="raise")
+    y = dataset[SCORE_COLUMN]
+    X_train = X.loc[train_indices].copy()
+    X_test = X.loc[validation_indices].copy()
+    y_train = y.loc[train_indices].copy()
+    y_test = y.loc[validation_indices].copy()
 
     if cfg["scale_features"]:
         scaler = MinMaxScaler()
@@ -667,11 +643,7 @@ def infer_feature_categories_from_pipeline_config(cfg: dict[str, Any]) -> dict[s
             for spec in _config_list(timm_encoders):
                 categories["timm_prefixes"].append(spec.split("=", 1)[0].strip())
 
-    return {
-        key: sorted(set(value), key=str.lower)
-        for key, value in categories.items()
-        if value
-    }
+    return {key: sorted(set(value), key=str.lower) for key, value in categories.items() if value}
 
 
 def configured_feature_categories(cfg: dict[str, Any] | None = None) -> dict[str, list[str]]:
@@ -707,10 +679,7 @@ def feature_family(feature_name: str, cfg: dict[str, Any] | None = None) -> str:
         return "NR"
     if any(feature == prefix or feature.startswith(prefix + "_") for prefix in timm_prefixes):
         return "Timm"
-    if any(
-        feature == metric or feature.startswith(metric + "_")
-        for metric in fr_metrics
-    ):
+    if any(feature == metric or feature.startswith(metric + "_") for metric in fr_metrics):
         return "FR"
     if feature.startswith("vgg_"):
         return "VGG"
@@ -796,7 +765,9 @@ def save_plot(fig: plt.Figure, out_path: Path, cfg: dict[str, Any]) -> None:
         fig.savefig(out_path.with_suffix(".svg"), **savefig_kwargs)
 
 
-def model_params(cfg: dict[str, Any], model_name: str, defaults: dict[str, Any] | None = None) -> dict[str, Any]:
+def model_params(
+    cfg: dict[str, Any], model_name: str, defaults: dict[str, Any] | None = None
+) -> dict[str, Any]:
     params = dict(defaults or {})
     params.update(cfg["models"].get(model_name, {}).get("params", {}))
     return params
@@ -1031,13 +1002,14 @@ def _xgboost_shap_values(model: Any, X_test: pd.DataFrame) -> np.ndarray:
     dmatrix = xgb.DMatrix(X_test, feature_names=list(X_test.columns))
     contributions = np.asarray(booster.predict(dmatrix, pred_contribs=True), dtype=float)
     if contributions.ndim == 3:
-        contributions = contributions[:, :, 0] if contributions.shape[2] == 1 else np.mean(contributions, axis=2)
+        contributions = (
+            contributions[:, :, 0] if contributions.shape[2] == 1 else np.mean(contributions, axis=2)
+        )
 
     expected_shape = (X_test.shape[0], X_test.shape[1] + 1)
     if contributions.shape != expected_shape:
         raise ValueError(
-            "Unexpected XGBoost SHAP contribution shape: "
-            f"{contributions.shape}; expected {expected_shape}"
+            f"Unexpected XGBoost SHAP contribution shape: {contributions.shape}; expected {expected_shape}"
         )
 
     return contributions[:, :-1]
@@ -1196,7 +1168,7 @@ def plot_all_importances(
         for ax, (_, _), image in zip(axes_flat, valid, images, strict=False):
             ax.imshow(image)
             ax.axis("off")
-        for ax in axes_flat[len(images):]:
+        for ax in axes_flat[len(images) :]:
             ax.axis("off")
 
         palette = importance_palette()
@@ -1240,7 +1212,7 @@ def plot_all_shap_importances(
         for ax, (_, _), image in zip(axes_flat, valid, images, strict=False):
             ax.imshow(image)
             ax.axis("off")
-        for ax in axes_flat[len(images):]:
+        for ax in axes_flat[len(images) :]:
             ax.axis("off")
 
         palette = importance_palette()
@@ -1499,7 +1471,9 @@ def plot_feature_cross_correlation_matrix(
 
     n_features = len(cross_correlations)
     default_size = min(max(7.0, 0.34 * n_features), 24.0)
-    figsize = tuple(cfg.get("plot", {}).get("feature_correlation_matrix_figsize", [default_size, default_size]))
+    figsize = tuple(
+        cfg.get("plot", {}).get("feature_correlation_matrix_figsize", [default_size, default_size])
+    )
     label_limit = int(cfg.get("plot", {}).get("max_feature_correlation_matrix_labels", 45))
     show_labels = n_features <= label_limit
     label_font_size = cfg.get("plot", {}).get(
@@ -1615,16 +1589,20 @@ def compute_feature_outliers(
     strongest_feature = z.abs().idxmax(axis=1)
 
     threshold = float(cfg.get("analysis", {}).get("outliers", {}).get("feature_z_threshold", 3.0))
-    return pd.DataFrame(
-        {
-            "name": names.reset_index(drop=True),
-            "max_abs_z": max_abs_z.reset_index(drop=True),
-            "mean_abs_z": mean_abs_z.reset_index(drop=True),
-            "euclidean_z": pd.Series(euclidean_z).reset_index(drop=True),
-            "strongest_feature": strongest_feature.reset_index(drop=True),
-            "is_outlier": max_abs_z.reset_index(drop=True) >= threshold,
-        }
-    ).sort_values("max_abs_z", ascending=False).reset_index(drop=True)
+    return (
+        pd.DataFrame(
+            {
+                "name": names.reset_index(drop=True),
+                "max_abs_z": max_abs_z.reset_index(drop=True),
+                "mean_abs_z": mean_abs_z.reset_index(drop=True),
+                "euclidean_z": pd.Series(euclidean_z).reset_index(drop=True),
+                "strongest_feature": strongest_feature.reset_index(drop=True),
+                "is_outlier": max_abs_z.reset_index(drop=True) >= threshold,
+            }
+        )
+        .sort_values("max_abs_z", ascending=False)
+        .reset_index(drop=True)
+    )
 
 
 def compute_prediction_outliers(predictions_by_model: dict[str, pd.DataFrame]) -> pd.DataFrame:
@@ -1635,14 +1613,18 @@ def compute_prediction_outliers(predictions_by_model: dict[str, pd.DataFrame]) -
     residual_columns = []
     prediction_columns = []
     for model_name, predictions in predictions_by_model.items():
-        current = predictions[["name", "mos", "prediction"]].copy()
+        current = predictions[[SAMPLE_ID_COLUMN, "mos", "prediction"]].copy()
         pred_col = f"prediction_{model_name}"
         residual_col = f"abs_error_{model_name}"
         current = current.rename(columns={"prediction": pred_col})
         current[residual_col] = (current[pred_col] - current["mos"]).abs()
         residual_columns.append(residual_col)
         prediction_columns.append(pred_col)
-        base = current if base is None else base.merge(current.drop(columns=["mos"]), on="name", how="outer")
+        base = (
+            current
+            if base is None
+            else base.merge(current.drop(columns=["mos"]), on=SAMPLE_ID_COLUMN, how="outer")
+        )
 
     if base is None:
         return pd.DataFrame()
@@ -1671,7 +1653,9 @@ def plot_outlier_scores(
     default_height = max(5, 0.35 * len(plot_df))
 
     with plt.rc_context(plot_rc_params(cfg)):
-        fig, ax = plt.subplots(figsize=tuple(cfg.get("plot", {}).get("outlier_figsize", [10, default_height])))
+        fig, ax = plt.subplots(
+            figsize=tuple(cfg.get("plot", {}).get("outlier_figsize", [10, default_height]))
+        )
         ax.barh(np.arange(len(plot_df)), plot_df[score_column], color="#536dfe")
         ax.set_yticks(np.arange(len(plot_df)))
         ax.set_yticklabels(labels)
@@ -1716,7 +1700,7 @@ def save_outlier_analysis(
         prediction_plot = plot_outlier_scores(
             prediction_outliers,
             "max_abs_error",
-            "name",
+            SAMPLE_ID_COLUMN,
             "Prediction Outliers",
             outlier_dir / "prediction_outliers.png",
             cfg,
@@ -1815,7 +1799,9 @@ def compute_feature_analysis_metrics(
     return rows.sort_values("rank_score", ascending=False).reset_index(drop=True)
 
 
-def plot_feature_analysis_metrics(metrics_df: pd.DataFrame, out_dir: Path, cfg: dict[str, Any]) -> Path | None:
+def plot_feature_analysis_metrics(
+    metrics_df: pd.DataFrame, out_dir: Path, cfg: dict[str, Any]
+) -> Path | None:
     if metrics_df.empty:
         return None
 
@@ -1828,7 +1814,9 @@ def plot_feature_analysis_metrics(metrics_df: pd.DataFrame, out_dir: Path, cfg: 
     default_height = max(6, 0.35 * len(plot_df))
 
     with plt.rc_context(plot_rc_params(cfg)):
-        fig, ax = plt.subplots(figsize=tuple(cfg.get("plot", {}).get("feature_metric_figsize", [10, default_height])))
+        fig, ax = plt.subplots(
+            figsize=tuple(cfg.get("plot", {}).get("feature_metric_figsize", [10, default_height]))
+        )
         ax.barh(np.arange(len(plot_df)), plot_df[rank_by], color="#0077b6")
         ax.set_yticks(np.arange(len(plot_df)))
         ax.set_yticklabels(plot_df["pretty_feature"].tolist())
@@ -2045,11 +2033,21 @@ def save_feature_selection_analysis(
     }
 
 
-def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, Any]:
+def run_experiment(
+    cfg: dict[str, Any],
+    samples: Sequence[Mapping[str, Any]],
+    make_plots: bool = True,
+) -> dict[str, Any]:
     np.random.seed(cfg["seed"])
 
-    dataset = build_dataset(cfg)
-    X_train, X_test, y_train, y_test = split_dataset(dataset, cfg)
+    regressor_samples = [
+        sample
+        for sample in samples
+        if sample["regressors"].get("train") is True
+        or sample["regressors"].get("validate") is True
+    ]
+    dataset = build_dataset(cfg, samples=regressor_samples)
+    X_train, X_test, y_train, y_test = split_dataset(dataset, cfg, regressor_samples)
 
     try:
         run_name = f"{cfg['experiment_name']}@pca{cfg['features']['pca_n']}"
@@ -2069,7 +2067,7 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
     profile_regressors = is_regressor_profiling_enabled(cfg)
     profile_rows: list[dict[str, Any]] = []
     predictions_by_model: dict[str, pd.DataFrame] = {}
-    prediction_names = dataset.loc[y_test.index, cfg["dataset"]["name_column"]].reset_index(drop=True)
+    prediction_names = dataset.loc[y_test.index, SAMPLE_ID_COLUMN].reset_index(drop=True)
 
     for model_name, model in init_models(cfg):
         if profile_regressors:
@@ -2099,7 +2097,7 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
         all_srcc.append(srcc)
         predictions_by_model[model_name] = pd.DataFrame(
             {
-                "name": prediction_names,
+                SAMPLE_ID_COLUMN: prediction_names,
                 "mos": y_test.reset_index(drop=True),
                 "prediction": np.asarray(pred, dtype=float).reshape(-1),
             }
@@ -2113,7 +2111,20 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
             shap_path = plot_shap_importance(model_name, model, X_test, output_dirs["shap"], cfg)
             shap_paths[model_name] = str(shap_path) if shap_path else None
 
-    results.extend(compute_metric_comparisons(cfg, dataset, y_test))
+    validation_sample_ids = dataset.loc[y_test.index, SAMPLE_ID_COLUMN].reset_index(drop=True)
+    validation_id_set = set(validation_sample_ids)
+    validation_samples = [
+        sample for sample in regressor_samples if sample[SAMPLE_ID_COLUMN] in validation_id_set
+    ]
+    metric_comparison_data = load_metric_comparison_data(cfg, validation_samples)
+    results.extend(
+        compute_metric_comparisons(
+            cfg,
+            metric_comparison_data,
+            validation_sample_ids,
+            y_test,
+        )
+    )
 
     if cfg["save_mean_correlations"]:
         results.append(
@@ -2148,7 +2159,8 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
         regressor_profile = pd.DataFrame(profile_rows)
         regressor_profile.to_csv(regressor_profile_path, index=False)
 
-        feature_profile_summary = load_feature_profile_summary(cfg, X_train.columns)
+        feature_roots = sorted({str(sample["features_root"]) for sample in regressor_samples})
+        feature_profile_summary = load_feature_profile_summary(cfg, X_train.columns, feature_roots)
         if not feature_profile_summary.empty:
             feature_profile_summary_path = output_dirs["profiling"] / "regressor_feature_profile_summary.csv"
             feature_profile_summary.to_csv(feature_profile_summary_path, index=False)
@@ -2166,8 +2178,7 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
     feature_cross_correlations.to_csv(output_dirs["feature_analysis"] / "feature_cross_correlations.csv")
 
     analysis_paths: dict[str, str | None] = {}
-    name_col = cfg["dataset"]["name_column"]
-    names_all = dataset.loc[X_all.index, name_col].reset_index(drop=True)
+    names_all = dataset.loc[X_all.index, SAMPLE_ID_COLUMN].reset_index(drop=True)
     if analysis_enabled(cfg, "outliers"):
         analysis_paths.update(save_outlier_analysis(X_all, names_all, predictions_by_model, out_dir, cfg))
     if analysis_enabled(cfg, "feature_metrics"):
@@ -2203,7 +2214,9 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
                 cfg,
             )
         if plot_enabled(cfg, "prediction_scatter"):
-            prediction_scatter_path = plot_prediction_scatter(predictions_by_model, output_dirs["predictions"], cfg)
+            prediction_scatter_path = plot_prediction_scatter(
+                predictions_by_model, output_dirs["predictions"], cfg
+            )
         if "source" in results_df.columns:
             without_metrics = results_df[results_df["source"] != "metric"].copy()
         else:
@@ -2245,75 +2258,27 @@ def run_experiment(cfg: dict[str, Any], make_plots: bool = True) -> dict[str, An
         "regressor_total_profile_path": (
             str(regressor_total_profile_path) if regressor_total_profile_path else None
         ),
-        "feature_profile_summary_path": str(feature_profile_summary_path) if feature_profile_summary_path else None,
+        "feature_profile_summary_path": str(feature_profile_summary_path)
+        if feature_profile_summary_path
+        else None,
     }
 
 
-def extract_regressor_config(cfg: dict[str, Any], base_dir: Path | None = None) -> dict[str, Any]:
+def extract_regressor_config(cfg: dict[str, Any]) -> dict[str, Any]:
     section = cfg.get("regressors")
+    if section is None and isinstance(cfg.get("models"), dict):
+        return deepcopy(cfg)
     if not isinstance(section, dict):
-        return cfg
-
-    controls = {
-        "enabled",
-        "make_plots",
-        "no_plots",
-        "config_path",
-        "config",
-        "overrides",
-    }
-    regressor_keys = {
-        "seed",
-        "experiment_name",
-        "test_size",
-        "scale_features",
-        "permutation_repeats",
-        "paths",
-        "dataset",
-        "features",
-        "models",
-    }
-
-    if "config_path" in section:
-        nested_path = Path(section["config_path"]).expanduser()
-        if not nested_path.is_absolute() and base_dir is not None:
-            nested_path = base_dir / nested_path
-        result = load_config(nested_path)
-    elif isinstance(section.get("config"), dict):
-        result = deepcopy(section["config"])
-    elif any(key in section for key in regressor_keys):
-        result = {key: deepcopy(value) for key, value in section.items() if key not in controls}
-    else:
-        return cfg
-
-    if isinstance(section.get("config"), dict) and "config_path" in section:
-        result = deep_update(result, section["config"])
-    if isinstance(section.get("overrides"), dict):
-        result = deep_update(result, section["overrides"])
+        raise ValueError("Unified config must define regressors")
+    if not isinstance(section.get("config"), dict):
+        raise ValueError("regressors must define a config object")
+    result = deepcopy(section["config"])
 
     inferred_categories = infer_feature_categories_from_pipeline_config(cfg)
     if inferred_categories:
         result = deep_update({"feature_categories": inferred_categories}, result)
 
     return result
-
-
-def load_packaged_config(name: str) -> dict[str, Any]:
-    with resources.files("qualisr.configs").joinpath(name).open(encoding="utf-8") as handle:
-        cfg = extract_regressor_config(json.load(handle), None)
-
-    if name == "default.json":
-        sample_root = resources.files("qualisr.sample_data")
-        cfg = deep_update(
-            cfg,
-            {
-                "paths": {
-                    "labels": str(sample_root.joinpath("scores", "labels.csv")),
-                    "features_root": str(sample_root.joinpath("features")),
-                },
-            },
-        )
-    return cfg
 
 
 def resolve_path_from_config(value: Any, base_dir: Path) -> Any:
@@ -2376,15 +2341,101 @@ def resolve_regressor_config_paths(cfg: dict[str, Any], base_dir: Path | None) -
     return result
 
 
+def load_packaged_config() -> dict[str, Any]:
+    config_path = resources.files("qualisr.configs").joinpath("default.json")
+    with config_path.open(encoding="utf-8") as handle:
+        cfg = extract_regressor_config(json.load(handle))
+
+    sample_root = resources.files("qualisr.sample_data")
+    return deep_update(
+        cfg,
+        {
+            "paths": {
+                "labels": str(sample_root.joinpath("scores", "labels.csv")),
+                "features_root": str(sample_root.joinpath("features")),
+            }
+        },
+    )
+
+
+def load_feature_bundle_samples(
+    labels_path: str | Path,
+    features_root: str | Path,
+    dataset_name: str = "QualiSR-Set120",
+) -> list[dict[str, Any]]:
+    labels = pd.read_csv(labels_path)
+    required = {"test_case", "method", "score"}
+    missing = sorted(required - set(labels.columns))
+    if missing:
+        raise ValueError(f"Bundled labels are missing required columns: {missing}")
+
+    method_aliases = {
+        "pasd": "PASD",
+        "realesrgan": "RealESRGAN",
+        "real_esrgan": "RealESRGAN",
+        "real-esrgan": "RealESRGAN",
+        "supir": "SUPIR",
+    }
+    usage = {"train": True, "validate": True, "test_size": 0.2}
+    samples: list[dict[str, Any]] = []
+    for row in labels.to_dict("records"):
+        method_raw = str(row["method"]).strip()
+        method = method_aliases.get(method_raw.casefold(), method_raw)
+        test_case = str(row["test_case"]).strip()
+        samples.append(
+            {
+                "sample_id": f"{dataset_name}/{method}/{test_case}.npy.gz",
+                "dataset": dataset_name,
+                "test_case": test_case,
+                "method": method,
+                "score": float(row["score"]),
+                "features_root": str(features_root),
+                "regressors": dict(usage),
+            }
+        )
+    return samples
+
+
 def load_config(path: Path | None = None) -> dict[str, Any]:
     if path is None:
-        return load_packaged_config("default.json")
-    if path.exists():
-        base_dir = config_file_base_dir(path)
-        with open(path, encoding="utf-8") as handle:
-            cfg = extract_regressor_config(json.load(handle), base_dir)
-        return resolve_regressor_config_paths(cfg, base_dir)
-    raise FileNotFoundError(f"Regressor config not found: {path}")
+        return load_packaged_config()
+    if not path.exists():
+        raise FileNotFoundError(f"Regressor config not found: {path}")
+    base_dir = config_file_base_dir(path)
+    with open(path, encoding="utf-8") as handle:
+        cfg = extract_regressor_config(json.load(handle))
+    return resolve_regressor_config_paths(cfg, base_dir)
+
+
+def load_config_with_samples(
+    path: Path | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Load a regressor config and its dataset or bundled sample records."""
+
+    cfg = load_config(path)
+    if path is None:
+        return cfg, load_feature_bundle_samples(
+            cfg["paths"]["labels"],
+            cfg["paths"]["features_root"],
+        )
+
+    with open(path, encoding="utf-8") as handle:
+        source_cfg = json.load(handle)
+    dataset_entries = source_cfg.get("datasets")
+    if dataset_entries is None:
+        paths = cfg.get("paths", {})
+        if "labels" not in paths or "features_root" not in paths:
+            raise ValueError(
+                "Standalone regressor config must define paths.labels and paths.features_root"
+            )
+        return cfg, load_feature_bundle_samples(paths["labels"], paths["features_root"])
+    if not isinstance(dataset_entries, list):
+        raise ValueError("Unified config must define datasets as a list")
+
+    from qualisr.datasets import load_datasets
+
+    samples = load_datasets(dataset_entries, base_dir=config_file_base_dir(path))
+    return cfg, samples
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -2392,7 +2443,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--config",
         default=None,
-        help="Path to experiment JSON config. Defaults to packaged qualisr/configs/default.json.",
+        help=(
+            "Path to a unified pipeline or standalone regressor JSON config. "
+            "Defaults to the packaged sample experiment."
+        ),
     )
     parser.add_argument("--experiment-name", default=None, help="Override config experiment_name.")
     parser.add_argument("--plots-root", default=None, help="Override config paths.plots_root.")
@@ -2433,7 +2487,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    cfg = load_config(Path(args.config) if args.config is not None else None)
+    cfg, samples = load_config_with_samples(Path(args.config) if args.config is not None else None)
 
     overrides: dict[str, Any] = {}
     if args.experiment_name is not None:
@@ -2458,7 +2512,7 @@ def main(argv: list[str] | None = None) -> None:
     if overrides:
         cfg = deep_update(cfg, overrides)
 
-    result = run_experiment(cfg, make_plots=not args.no_plots)
+    result = run_experiment(cfg, make_plots=not args.no_plots, samples=samples)
     print(f"Saved results to {result['output_dir']}")
     print(result["results"].to_string(index=False))
 
