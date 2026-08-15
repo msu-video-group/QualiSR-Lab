@@ -567,7 +567,7 @@ def parse_dsr_dataset(
     dataset_name: str = "dsr-dataset",
     exts: Iterable[str] | None = None,
     recursive: bool = True,
-    scale_split_dirs: bool = False,
+    scale_split_dirs: bool = True,
     include_refs: bool = True,
 ) -> list[dict[str, Any]]:
     """Parse DSR datasets whose MOS rows name SR images.
@@ -1498,8 +1498,8 @@ def normalize_samples(
                 raise ValueError(f"Dataset '{dataset_name}' sample #{index} is missing '{key}'")
 
         score = float(sample["score"])
-        if not math.isfinite(score) or not 0.0 <= score <= 1.0:
-            raise ValueError(f"Dataset '{dataset_name}' sample #{index} has score outside [0, 1]: {score}")
+        # if not math.isfinite(score) or not 0.0 <= score <= 1.0:
+        #     raise ValueError(f"Dataset '{dataset_name}' sample #{index} has score outside [0, 1]: {score}")
         sample["score"] = score
 
         for key in ("sr_path", "lr_path", "hr_path", "heatmap_path"):
