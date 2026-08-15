@@ -21,7 +21,7 @@
       }
     },
     {
-      "name": "ISRGen-QA",
+      "name": "isrgenqa",
       "root": "/mnt/ssd2/29o_rya/datasets/iqa/ISRGen-QA",
       "features_root": "/mnt/ssd2/29o_rya/datasets/iqa/ISRGen-QA/features",
       "regressors": {
@@ -31,7 +31,7 @@
       }
     },
     {
-      "name": "RealSRQ",
+      "name": "realsrq",
       "root": "/mnt/ssd2/29o_rya/datasets/iqa/RealSRQ-KLTSRQA-released/RealSRQ",
       "features_root": "/mnt/ssd2/29o_rya/datasets/iqa/RealSRQ-KLTSRQA-released/RealSRQ/features",
       "regressors": {

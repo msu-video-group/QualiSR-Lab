@@ -20,7 +20,7 @@
       }
     },
     {
-      "name": "ISRGen-QA",
+      "name": "isrgenqa",
       "root": "/mnt/ssd2/29o_rya/datasets/iqa/ISRGen-QA",
       "features_root": "/mnt/ssd2/29o_rya/datasets/iqa/ISRGen-QA/features",
       "regressors": {
