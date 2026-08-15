@@ -291,3 +291,86 @@ def test_training_dataset_test_split_is_grouped(tmp_path: Path) -> None:
     assert len(X_train) == 3
     assert len(X_validation) == 3
     assert set(X_train.index).isdisjoint(X_validation.index)
+
+
+def test_grouped_cross_validation_keeps_source_groups_together() -> None:
+    from qualisr.regressors import grouped_cross_validation_splits
+
+    dataset = pd.DataFrame(
+        [
+            {
+                "sample_id": f"dataset-{dataset_index}/method-{method}/{source}",
+                "dataset": f"dataset-{dataset_index}",
+                "test_case": source,
+                "score": 0.5,
+                "quality": 1.0,
+            }
+            for dataset_index in range(2)
+            for source in ("source-a", "source-b", "source-c")
+            for method in range(2)
+        ]
+    )
+    cfg = {
+        "seed": 42,
+        "cross_validation": {"enabled": True, "n_splits": 3},
+    }
+
+    splits = grouped_cross_validation_splits(dataset, cfg)
+    validation_indices = []
+    for train_indices, fold_validation_indices in splits:
+        train_groups = {
+            (dataset.loc[index, "dataset"], dataset.loc[index, "test_case"])
+            for index in train_indices
+        }
+        validation_groups = {
+            (dataset.loc[index, "dataset"], dataset.loc[index, "test_case"])
+            for index in fold_validation_indices
+        }
+        assert train_groups.isdisjoint(validation_groups)
+        validation_indices.extend(fold_validation_indices)
+
+    assert sorted(validation_indices) == dataset.index.tolist()
+
+
+def test_cross_validation_run_saves_fold_and_aggregate_outputs(tmp_path: Path) -> None:
+    from qualisr.regressors import run_experiment
+
+    samples = regressor_samples(
+        "train-data",
+        tmp_path / "features",
+        {"train": True, "validate": False, "test_size": 0},
+        10,
+    )
+    cfg = regressor_test_config()
+    cfg.update(
+        {
+            "experiment_name": "cv-test",
+            "cross_validation": {"enabled": True, "n_splits": 5},
+            "save_dataset_snapshot": True,
+            "save_mean_correlations": False,
+            "save_best_correlations": False,
+            "profiling": {"regressors": False},
+            "analysis": {
+                "outliers": {"enabled": False},
+                "feature_metrics": {"enabled": False},
+                "feature_selection": {"enabled": False},
+            },
+            "correlation_metrics": {"enabled": False, "items": []},
+            "paths": {"plots_root": str(tmp_path / "plots")},
+            "models": {"linear": {"enabled": True, "params": {}}},
+            "plot": {"enabled": False},
+        }
+    )
+
+    result = run_experiment(cfg, samples, make_plots=False)
+
+    assert len(result["fold_outputs"]) == 5
+    assert set(result["fold_results"]["fold"]) == {1, 2, 3, 4, 5}
+    assert result["results"].loc[0, "n_folds"] == 5
+    output_dir = Path(result["output_dir"])
+    assignments = pd.read_csv(output_dir / "metadata" / "cross_validation_folds.csv")
+    predictions = pd.read_csv(output_dir / "predictions" / "predictions_linear.csv")
+    assert len(assignments) == len(predictions) == 10
+    assert set(assignments["fold"]) == {1, 2, 3, 4, 5}
+    assert (output_dir / "correlations" / "cross_validation_folds.csv").is_file()
+    assert (output_dir / "correlations" / "correlations.csv").is_file()

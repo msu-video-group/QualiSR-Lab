@@ -13,6 +13,8 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+from qualisr.config_paths import discover_config_paths
+
 SECTION_ORDER = (
     "references",
     "features",
@@ -566,7 +568,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--config",
         default=None,
-        help="Unified pipeline JSON config. Defaults to packaged qualisr/configs/pipeline.json.",
+        help=(
+            "Unified pipeline JSON config or directory of configs to run recursively in sequence. "
+            "Defaults to packaged qualisr/configs/pipeline.json."
+        ),
     )
     parser.add_argument("--only-section", nargs="+", choices=SECTION_ORDER, default=None)
     parser.add_argument("--skip-section", nargs="+", choices=SECTION_ORDER, default=None)
@@ -580,8 +585,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
     config_path = Path(args.config) if args.config is not None else None
-    cfg = load_pipeline_config(config_path)
-    run_pipeline(cfg, config_base_dir(config_path), pipeline_options_from_namespace(args))
+    config_paths = [None] if config_path is None else discover_config_paths(config_path)
+    if len(config_paths) > 1 and args.experiment_name is not None:
+        raise ValueError("--experiment-name cannot be used with multiple configs")
+
+    options = pipeline_options_from_namespace(args)
+    for index, current_path in enumerate(config_paths, start=1):
+        if len(config_paths) > 1:
+            print(f"[{index}/{len(config_paths)}] Running pipeline config: {current_path}")
+        cfg = load_pipeline_config(current_path)
+        run_pipeline(cfg, config_base_dir(current_path), options)
 
 
 if __name__ == "__main__":

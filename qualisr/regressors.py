@@ -29,11 +29,12 @@ from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.feature_selection import chi2, f_regression, mutual_info_regression
 from sklearn.inspection import permutation_importance
 from sklearn.linear_model import ElasticNet, Lasso, LinearRegression, Ridge
-from sklearn.model_selection import GroupShuffleSplit
+from sklearn.model_selection import GroupKFold, GroupShuffleSplit
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.svm import SVR, LinearSVR
 
+from qualisr.config_paths import discover_config_paths
 from qualisr.profiling import (
     build_regressor_profile_row,
     build_regressor_total_profile,
@@ -577,6 +578,17 @@ def split_dataset(
                 )
             validation_indices.extend(group.index.tolist())
 
+    return prepare_dataset_split(dataset, cfg, train_indices, validation_indices)
+
+
+def prepare_dataset_split(
+    dataset: pd.DataFrame,
+    cfg: dict[str, Any],
+    train_indices: Sequence[int],
+    validation_indices: Sequence[int],
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
+    """Build and scale one explicit train/validation split."""
+
     if not train_indices:
         raise ValueError("At least one dataset must provide regressor training samples")
     if not validation_indices:
@@ -596,6 +608,56 @@ def split_dataset(
         X_test = pd.DataFrame(scaler.transform(X_test), columns=X.columns, index=X_test.index)
 
     return X_train, X_test, y_train, y_test
+
+
+def cross_validation_settings(cfg: Mapping[str, Any]) -> tuple[bool, int]:
+    """Return validated grouped cross-validation settings."""
+
+    raw = cfg.get("cross_validation", {})
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, Mapping):
+        raise ValueError("cross_validation must be an object")
+
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("cross_validation.enabled must be a boolean")
+
+    n_splits = raw.get("n_splits", 5)
+    if isinstance(n_splits, bool) or not isinstance(n_splits, int) or n_splits < 2:
+        raise ValueError("cross_validation.n_splits must be an integer of at least 2")
+    return enabled, n_splits
+
+
+def grouped_cross_validation_splits(
+    dataset: pd.DataFrame,
+    cfg: Mapping[str, Any],
+) -> list[tuple[list[int], list[int]]]:
+    """Create seeded folds grouped by dataset and source/GT image."""
+
+    _, n_splits = cross_validation_settings(cfg)
+    groups = dataset[DATASET_COLUMN].astype(str).str.cat(
+        dataset[GROUP_COLUMN].astype(str),
+        sep="/",
+    )
+    n_groups = int(groups.nunique())
+    if n_groups < n_splits:
+        raise ValueError(
+            f"Grouped cross-validation requires at least {n_splits} source/GT groups; "
+            f"found {n_groups}"
+        )
+
+    splitter = GroupKFold(
+        n_splits=n_splits,
+        shuffle=True,
+        random_state=int(cfg["seed"]),
+    )
+    splits = []
+    for train_positions, validation_positions in splitter.split(dataset, groups=groups):
+        train_indices = dataset.iloc[train_positions].index.tolist()
+        validation_indices = dataset.iloc[validation_positions].index.tolist()
+        splits.append((train_indices, validation_indices))
+    return splits
 
 
 def _config_list(value: Any) -> list[str]:
@@ -2033,10 +2095,20 @@ def save_feature_selection_analysis(
     }
 
 
-def run_experiment(
+def experiment_run_name(cfg: Mapping[str, Any]) -> str:
+    try:
+        return f"{cfg['experiment_name']}@pca{cfg['features']['pca_n']}"
+    except KeyError:
+        return str(cfg["experiment_name"])
+
+
+def _run_single_experiment(
     cfg: dict[str, Any],
     samples: Sequence[Mapping[str, Any]],
     make_plots: bool = True,
+    split_indices: tuple[Sequence[int], Sequence[int]] | None = None,
+    output_subdir: str | None = None,
+    dataset_override: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     np.random.seed(cfg["seed"])
 
@@ -2046,14 +2118,20 @@ def run_experiment(
         if sample["regressors"].get("train") is True
         or sample["regressors"].get("validate") is True
     ]
-    dataset = build_dataset(cfg, samples=regressor_samples)
-    X_train, X_test, y_train, y_test = split_dataset(dataset, cfg, regressor_samples)
+    dataset = dataset_override if dataset_override is not None else build_dataset(cfg, samples=regressor_samples)
+    if split_indices is None:
+        X_train, X_test, y_train, y_test = split_dataset(dataset, cfg, regressor_samples)
+    else:
+        X_train, X_test, y_train, y_test = prepare_dataset_split(
+            dataset,
+            cfg,
+            split_indices[0],
+            split_indices[1],
+        )
 
-    try:
-        run_name = f"{cfg['experiment_name']}@pca{cfg['features']['pca_n']}"
-    except KeyError:
-        run_name = f"{cfg['experiment_name']}"
-    out_dir = ensure_dir(Path(cfg["paths"]["plots_root"]) / run_name)
+    run_name = experiment_run_name(cfg)
+    base_out_dir = Path(cfg["paths"]["plots_root"]) / run_name
+    out_dir = ensure_dir(base_out_dir / output_subdir if output_subdir else base_out_dir)
     output_dirs = regressor_output_dirs(out_dir)
 
     if cfg.get("save_dataset_snapshot", False):
@@ -2154,7 +2232,8 @@ def run_experiment(
     regressor_total_profile_path = None
     feature_profile_summary_path = None
     if profile_rows:
-        regressor_profile_path = resolve_regressor_profile_path(cfg, out_dir, run_name)
+        profile_run_name = f"{run_name}_{output_subdir}" if output_subdir else run_name
+        regressor_profile_path = resolve_regressor_profile_path(cfg, out_dir, profile_run_name)
         ensure_dir(regressor_profile_path.parent)
         regressor_profile = pd.DataFrame(profile_rows)
         regressor_profile.to_csv(regressor_profile_path, index=False)
@@ -2167,7 +2246,11 @@ def run_experiment(
 
             total_profile = build_regressor_total_profile(regressor_profile, feature_profile_summary)
             if not total_profile.empty:
-                regressor_total_profile_path = resolve_regressor_total_profile_path(cfg, out_dir, run_name)
+                regressor_total_profile_path = resolve_regressor_total_profile_path(
+                    cfg,
+                    out_dir,
+                    profile_run_name,
+                )
                 ensure_dir(regressor_total_profile_path.parent)
                 total_profile.to_csv(regressor_total_profile_path, index=False)
 
@@ -2240,6 +2323,7 @@ def run_experiment(
         "output_dirs": {name: str(path) for name, path in output_dirs.items()},
         "importance_paths": importance_paths,
         "shap_paths": shap_paths,
+        "predictions": predictions_by_model,
         "analysis_paths": analysis_paths,
         "all_importances_path": str(combined_importance_path) if combined_importance_path else None,
         "all_shap_importances_path": (
@@ -2262,6 +2346,149 @@ def run_experiment(
         if feature_profile_summary_path
         else None,
     }
+
+
+def run_cross_validation_experiment(
+    cfg: dict[str, Any],
+    samples: Sequence[Mapping[str, Any]],
+    make_plots: bool = True,
+) -> dict[str, Any]:
+    """Run grouped K-fold cross-validation and aggregate fold outputs."""
+
+    _, n_splits = cross_validation_settings(cfg)
+    validation_only = sorted(
+        {
+            str(sample[DATASET_COLUMN])
+            for sample in samples
+            if sample["regressors"].get("validate") is True
+            and sample["regressors"].get("train") is not True
+        }
+    )
+    if validation_only:
+        raise ValueError(
+            "Cross-validation does not accept validation-only datasets: "
+            + ", ".join(validation_only)
+        )
+
+    cv_samples = [sample for sample in samples if sample["regressors"].get("train") is True]
+    if not cv_samples:
+        raise ValueError("Cross-validation requires at least one training dataset")
+
+    dataset = build_dataset(cfg, samples=cv_samples)
+    splits = grouped_cross_validation_splits(dataset, cfg)
+    run_name = experiment_run_name(cfg)
+    out_dir = ensure_dir(Path(cfg["paths"]["plots_root"]) / run_name)
+    output_dirs = regressor_output_dirs(out_dir)
+
+    assignments = dataset[[SAMPLE_ID_COLUMN, DATASET_COLUMN, GROUP_COLUMN]].copy()
+    assignments["fold"] = pd.Series(pd.NA, index=assignments.index, dtype="Int64")
+    fold_results = []
+    fold_outputs = []
+    predictions_by_model: dict[str, list[pd.DataFrame]] = {}
+
+    for fold, split_indices in enumerate(splits, start=1):
+        assignments.loc[split_indices[1], "fold"] = fold
+        result = _run_single_experiment(
+            cfg,
+            cv_samples,
+            make_plots=make_plots,
+            split_indices=split_indices,
+            output_subdir=f"fold_{fold:02d}",
+            dataset_override=dataset,
+        )
+        current_results = result["results"].copy()
+        current_results.insert(0, "fold", fold)
+        fold_results.append(current_results)
+        fold_outputs.append(str(result["output_dir"]))
+        for model_name, predictions in result["predictions"].items():
+            current_predictions = predictions.copy()
+            current_predictions.insert(0, "fold", fold)
+            predictions_by_model.setdefault(model_name, []).append(current_predictions)
+
+    if assignments["fold"].isna().any():
+        raise RuntimeError("Cross-validation did not assign every sample to a validation fold")
+
+    fold_results_df = pd.concat(fold_results, ignore_index=True)
+    summary = (
+        fold_results_df.groupby(["model", "source"], as_index=False, dropna=False)
+        .agg(
+            plcc=("plcc", "mean"),
+            srcc=("srcc", "mean"),
+            plcc_std=("plcc", "std"),
+            srcc_std=("srcc", "std"),
+            n_folds=("fold", "nunique"),
+        )
+        .sort_values("srcc", ascending=False)
+        .reset_index(drop=True)
+    )
+    if not (summary["n_folds"] == n_splits).all():
+        raise RuntimeError("Cross-validation result rows are missing one or more folds")
+
+    fold_results_df.to_csv(
+        output_dirs["correlations"] / "cross_validation_folds.csv",
+        index=False,
+    )
+    summary.to_csv(output_dirs["correlations"] / "correlations.csv", index=False)
+    assignments.to_csv(output_dirs["metadata"] / "cross_validation_folds.csv", index=False)
+    if cfg.get("save_dataset_snapshot", False):
+        relativize_path_columns(dataset).to_csv(
+            output_dirs["metadata"] / "dataset_snapshot.csv",
+            index=False,
+        )
+    for model_name, prediction_frames in predictions_by_model.items():
+        pd.concat(prediction_frames, ignore_index=True).to_csv(
+            output_dirs["predictions"] / f"predictions_{model_name}.csv",
+            index=False,
+        )
+
+    correlations_path = None
+    correlations_without_metrics_path = None
+    if make_plots:
+        if plot_enabled(cfg, "correlations"):
+            correlations_path = plot_correlations(
+                summary,
+                output_dirs["correlations"],
+                cfg,
+                title=f"{n_splits}-Fold Mean Correlation Scores",
+            )
+        without_metrics = summary[summary["source"] != "metric"].copy()
+        if plot_enabled(cfg, "correlations_without_metrics") and not without_metrics.empty:
+            correlations_without_metrics_path = plot_correlations(
+                without_metrics,
+                output_dirs["correlations"],
+                cfg,
+                filename="correlations_without_metrics.png",
+                title=f"{n_splits}-Fold Mean Regressor Correlation Scores",
+            )
+
+    with open(output_dirs["metadata"] / "config.json", "w", encoding="utf-8") as handle:
+        json.dump(cfg, handle, indent=2)
+
+    return {
+        "dataset": dataset,
+        "results": summary,
+        "fold_results": fold_results_df,
+        "output_dir": out_dir,
+        "output_dirs": {name: str(path) for name, path in output_dirs.items()},
+        "fold_outputs": fold_outputs,
+        "correlations_path": str(correlations_path) if correlations_path else None,
+        "correlations_without_metrics_path": (
+            str(correlations_without_metrics_path)
+            if correlations_without_metrics_path
+            else None
+        ),
+    }
+
+
+def run_experiment(
+    cfg: dict[str, Any],
+    samples: Sequence[Mapping[str, Any]],
+    make_plots: bool = True,
+) -> dict[str, Any]:
+    enabled, _ = cross_validation_settings(cfg)
+    if enabled:
+        return run_cross_validation_experiment(cfg, samples, make_plots=make_plots)
+    return _run_single_experiment(cfg, samples, make_plots=make_plots)
 
 
 def extract_regressor_config(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -2444,7 +2671,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--config",
         default=None,
         help=(
-            "Path to a unified pipeline or standalone regressor JSON config. "
+            "Path to a unified pipeline or standalone regressor JSON config, or a directory "
+            "of configs to run recursively in sequence. "
             "Defaults to the packaged sample experiment."
         ),
     )
@@ -2487,34 +2715,45 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    cfg, samples = load_config_with_samples(Path(args.config) if args.config is not None else None)
+    config_path = Path(args.config) if args.config is not None else None
+    config_paths = [None] if config_path is None else discover_config_paths(config_path)
+    if len(config_paths) > 1:
+        if args.experiment_name is not None:
+            raise ValueError("--experiment-name cannot be used with multiple configs")
+        if args.profile_output is not None or args.profile_total_output is not None:
+            raise ValueError("Explicit profiling output paths cannot be used with multiple configs")
 
-    overrides: dict[str, Any] = {}
-    if args.experiment_name is not None:
-        overrides["experiment_name"] = args.experiment_name
-    if args.plots_root is not None:
-        overrides.setdefault("paths", {})["plots_root"] = args.plots_root
-    if args.save_svg:
-        overrides.setdefault("plot", {})["save_svg"] = True
-    if (
-        args.profile
-        or args.profile_output is not None
-        or args.profile_total_output is not None
-        or args.feature_profile_files is not None
-    ):
-        overrides.setdefault("profiling", {})["regressors"] = True
-    if args.profile_output is not None:
-        overrides.setdefault("profiling", {})["regressor_output"] = args.profile_output
-    if args.profile_total_output is not None:
-        overrides.setdefault("profiling", {})["regressor_total_output"] = args.profile_total_output
-    if args.feature_profile_files is not None:
-        overrides.setdefault("profiling", {})["feature_profile_files"] = args.feature_profile_files
-    if overrides:
-        cfg = deep_update(cfg, overrides)
+    for index, current_path in enumerate(config_paths, start=1):
+        if len(config_paths) > 1:
+            print(f"[{index}/{len(config_paths)}] Running regressor config: {current_path}")
+        cfg, samples = load_config_with_samples(current_path)
 
-    result = run_experiment(cfg, make_plots=not args.no_plots, samples=samples)
-    print(f"Saved results to {result['output_dir']}")
-    print(result["results"].to_string(index=False))
+        overrides: dict[str, Any] = {}
+        if args.experiment_name is not None:
+            overrides["experiment_name"] = args.experiment_name
+        if args.plots_root is not None:
+            overrides.setdefault("paths", {})["plots_root"] = args.plots_root
+        if args.save_svg:
+            overrides.setdefault("plot", {})["save_svg"] = True
+        if (
+            args.profile
+            or args.profile_output is not None
+            or args.profile_total_output is not None
+            or args.feature_profile_files is not None
+        ):
+            overrides.setdefault("profiling", {})["regressors"] = True
+        if args.profile_output is not None:
+            overrides.setdefault("profiling", {})["regressor_output"] = args.profile_output
+        if args.profile_total_output is not None:
+            overrides.setdefault("profiling", {})["regressor_total_output"] = args.profile_total_output
+        if args.feature_profile_files is not None:
+            overrides.setdefault("profiling", {})["feature_profile_files"] = args.feature_profile_files
+        if overrides:
+            cfg = deep_update(cfg, overrides)
+
+        result = run_experiment(cfg, make_plots=not args.no_plots, samples=samples)
+        print(f"Saved results to {result['output_dir']}")
+        print(result["results"].to_string(index=False))
 
 
 if __name__ == "__main__":
