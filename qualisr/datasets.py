@@ -1204,6 +1204,13 @@ def parse_realsrq(
                             "hr_path": _abs(hr_path),
                             "lr_path": _abs(lr_path),
                             "sr_path": _abs(sr_path),
+                            "heatmap_path": _abs(
+                                os.path.join(
+                                    base_path,
+                                    "heatmaps",
+                                    f"{Path(sr_path).stem}.npy.gz",
+                                )
+                            ),
                             "score": float(bt_scores[row_idx, col_idx]),
                         }
                     )

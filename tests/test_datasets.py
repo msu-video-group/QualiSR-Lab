@@ -144,6 +144,21 @@ def test_directory_dataset_uses_explicit_directories(tmp_path: Path) -> None:
     assert samples[0]["heatmap_path"] == str((heatmap_dir / "case.npy.gz").resolve())
 
 
+def test_realsrq_heatmaps_use_flat_heatmaps_directory(tmp_path: Path, monkeypatch) -> None:
+    import scipy.io
+
+    from qualisr.datasets import parse_realsrq
+
+    scores = np.arange(60 * 27, dtype=float).reshape(60, 27)
+    monkeypatch.setattr(scipy.io, "loadmat", lambda _: {"score_matrix": scores})
+
+    samples = parse_realsrq(str(tmp_path), include_refs=False)
+
+    assert samples[0]["heatmap_path"] == str(
+        (tmp_path / "heatmaps" / "Buildings_001_LR2_AIS.npy.gz").resolve()
+    )
+
+
 def test_sample_aware_statistics_uses_sample_id(tmp_path: Path) -> None:
     from qualisr.statistics import main as statistics_main
 
