@@ -60,6 +60,7 @@
     "make_plots": true,
     "config": {
       "seed": 42,
+      "split_seed": 42,
       "experiment_name": "datasets/mix_all",
       "scale_features": true,
       "cross_validation": {
@@ -127,7 +128,7 @@
         ]
       },
       "paths": {
-        "plots_root": "../../../plots"
+        "plots_root": "../../../plots/experiments"
       },
       "features": {
         "pca_n": 5,

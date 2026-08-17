@@ -25,9 +25,8 @@
       "root": "/mnt/ssd2/29o_rya/datasets/iqa/ISRGen-QA",
       "features_root": "/mnt/ssd2/29o_rya/datasets/iqa/ISRGen-QA/features",
       "regressors": {
-        "train": true,
-        "validate": true,
-        "test_size": 0.2
+        "train": false,
+        "validate": true
       }
     },
     {
@@ -60,6 +59,7 @@
     "make_plots": true,
     "config": {
       "seed": 42,
+      "split_seed": 42,
       "experiment_name": "features/stats_five",
       "scale_features": true,
       "cross_validation": {
@@ -127,7 +127,7 @@
         ]
       },
       "paths": {
-        "plots_root": "../../../plots"
+        "plots_root": "../../../plots/experiments"
       },
       "features": {
         "pca_n": 5,

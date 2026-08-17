@@ -72,6 +72,7 @@ def test_public_api_loads_packaged_configs() -> None:
         "enabled": False,
         "n_splits": 5,
     }
+    assert pipeline_cfg["regressors"]["config"]["split_seed"] == 42
     assert "qualisr/sample_data" in regressor_cfg["paths"]["features_root"].replace("\\", "/")
 
 

@@ -128,6 +128,16 @@ For regressors, set `train` and/or `validate` on each dataset:
 - A validation-only dataset omits `test_size`, and the entire dataset is used
   for validation.
 
+Grouped train/validation splits use the regressor config's `split_seed`, which
+is independent from the model-training `seed`. All samples with the same
+`test_case` (source/GT image) remain in the same partition.
+
+Datasets use `score_type: "mos"` by default. Built-in Bradley-Terry parsers,
+including RealSRQ, mark their samples as `bradley_terry` automatically. A
+custom dataset entry can set `score_type: "bradley_terry"` explicitly; its
+correlations are computed per `test_case` and averaged instead of pooling
+incompatible content scores.
+
 Multiple entries are combined in one run. Bundled names include
 `QualiSR-Set120`, `dsr-dataset`, `ISRGen-QA`, and `RealSRQ`.
 

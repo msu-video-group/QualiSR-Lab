@@ -23,6 +23,7 @@ from typing import Any
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff")
 REFERENCE_TYPES = ("bicubic", "rlfn", "span")
 REFERENCE_SUFFIXES = {"bicubic": "bicubic", "rlfn": "rlfn", "span": "span"}
+SCORE_TYPES = ("mos", "bradley_terry")
 BUILTIN_DATASETS = (
     "QualiSR-Set120",
     "quality-csv",
@@ -969,6 +970,7 @@ def parse_test_dsr_bt_dataset(
                 samples.append(
                     {
                         "dataset": dataset_name,
+                        "score_type": "bradley_terry",
                         "test_case": test_case,
                         "method": method,
                         "rel_path": os.path.relpath(
@@ -1198,6 +1200,7 @@ def parse_realsrq(
                     samples.append(
                         {
                             "dataset": dataset_name,
+                            "score_type": "bradley_terry",
                             "test_case": scene_name,
                             "method": f"{method}_x{lr_scale}",
                             "rel_path": os.path.relpath(sr_path, base_path).replace(os.sep, "/"),
@@ -1628,7 +1631,18 @@ def load_dataset(entry: Mapping[str, Any], base_dir: str | Path | None = None) -
     if isinstance(parsed, (str, bytes)) or not isinstance(parsed, Sequence):
         raise TypeError(f"Dataset parser '{name}' must return a list of dictionaries")
     samples = normalize_samples(parsed, dataset_name=name, root=root)
+    configured_score_type = entry.get("score_type")
+    if configured_score_type is not None and configured_score_type not in SCORE_TYPES:
+        raise ValueError(
+            f"Dataset '{name}' score_type must be one of {SCORE_TYPES}: {configured_score_type}"
+        )
     for sample in samples:
+        score_type = str(configured_score_type or sample.get("score_type", "mos"))
+        if score_type not in SCORE_TYPES:
+            raise ValueError(
+                f"Dataset '{name}' parser returned unsupported score_type '{score_type}'"
+            )
+        sample["score_type"] = score_type
         sample["features_root"] = str(features_root)
         sample["regressors"] = dict(regressors)
     return samples

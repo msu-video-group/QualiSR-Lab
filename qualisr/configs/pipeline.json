@@ -261,6 +261,7 @@
         "make_plots": true,
         "config": {
             "seed": 42,
+            "split_seed": 42,
             "experiment_name": "baseline",
             "scale_features": true,
             "cross_validation": {

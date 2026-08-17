@@ -246,10 +246,14 @@ SAMPLE_ID_COLUMN = "sample_id"
 SCORE_COLUMN = "score"
 DATASET_COLUMN = "dataset"
 GROUP_COLUMN = "test_case"
+SCORE_TYPE_COLUMN = "score_type"
+MOS_SCORE_TYPE = "mos"
+BRADLEY_TERRY_SCORE_TYPE = "bradley_terry"
 FEATURE_METADATA_COLUMNS = {
     SAMPLE_ID_COLUMN,
     DATASET_COLUMN,
     GROUP_COLUMN,
+    SCORE_TYPE_COLUMN,
     "rel_path",
     "sr_method",
     "sr_filename",
@@ -345,6 +349,9 @@ def build_dataset_group(cfg: dict[str, Any], samples: Sequence[Mapping[str, Any]
             SAMPLE_ID_COLUMN: [str(sample[SAMPLE_ID_COLUMN]) for sample in samples],
             DATASET_COLUMN: [str(sample[DATASET_COLUMN]) for sample in samples],
             GROUP_COLUMN: [str(sample[GROUP_COLUMN]) for sample in samples],
+            SCORE_TYPE_COLUMN: [
+                str(sample.get(SCORE_TYPE_COLUMN, MOS_SCORE_TYPE)) for sample in samples
+            ],
             SCORE_COLUMN: [float(sample[SCORE_COLUMN]) for sample in samples],
         }
     )
@@ -380,13 +387,106 @@ def build_dataset(cfg: dict[str, Any], samples: Sequence[Mapping[str, Any]]) -> 
         for name in names
     ]
     feature_columns = [
-        set(frame.columns) - {SAMPLE_ID_COLUMN, DATASET_COLUMN, GROUP_COLUMN, SCORE_COLUMN}
+        set(frame.columns)
+        - {
+            SAMPLE_ID_COLUMN,
+            DATASET_COLUMN,
+            GROUP_COLUMN,
+            SCORE_TYPE_COLUMN,
+            SCORE_COLUMN,
+        }
         for frame in frames
     ]
     if any(columns != feature_columns[0] for columns in feature_columns[1:]):
         raise ValueError("All regressor datasets must provide the same feature columns")
 
     return pd.concat(frames, ignore_index=True)
+
+
+def _mean_or_nan(values: Sequence[float]) -> float:
+    numeric = np.asarray(values, dtype=float)
+    finite = numeric[np.isfinite(numeric)]
+    return float(finite.mean()) if finite.size else np.nan
+
+
+def validation_correlations(
+    y_true: Any,
+    y_pred: Any,
+    metadata: pd.DataFrame,
+) -> tuple[float, float, pd.DataFrame, pd.DataFrame]:
+    """Compute MOS correlations per dataset and BT correlations per GT series."""
+
+    target = pd.Series(np.asarray(y_true, dtype=float).reshape(-1)).reset_index(drop=True)
+    prediction = pd.Series(np.asarray(y_pred, dtype=float).reshape(-1)).reset_index(drop=True)
+    metadata = metadata.reset_index(drop=True).copy()
+    if len(target) != len(prediction) or len(target) != len(metadata):
+        raise ValueError("Validation values and metadata must have identical lengths")
+
+    required = {DATASET_COLUMN, GROUP_COLUMN, SCORE_TYPE_COLUMN}
+    missing = sorted(required - set(metadata.columns))
+    if missing:
+        raise ValueError(f"Validation metadata is missing columns: {missing}")
+
+    detail_rows: list[dict[str, Any]] = []
+    for dataset_name, dataset_metadata in metadata.groupby(DATASET_COLUMN, sort=True):
+        score_types = dataset_metadata[SCORE_TYPE_COLUMN].dropna().astype(str).unique().tolist()
+        if len(score_types) != 1:
+            raise ValueError(
+                f"Validation dataset '{dataset_name}' must have exactly one score_type; "
+                f"found {score_types}"
+            )
+        score_type = score_types[0]
+        if score_type == BRADLEY_TERRY_SCORE_TYPE:
+            groups = dataset_metadata.groupby(GROUP_COLUMN, sort=True)
+            aggregation = "mean_per_gt"
+        elif score_type == MOS_SCORE_TYPE:
+            groups = [("all", dataset_metadata)]
+            aggregation = "pooled"
+        else:
+            raise ValueError(
+                f"Validation dataset '{dataset_name}' has unsupported score_type '{score_type}'"
+            )
+
+        for group_name, group_metadata in groups:
+            positions = group_metadata.index
+            valid = target.loc[positions].notna() & prediction.loc[positions].notna()
+            plcc, srcc = safe_corr(
+                target.loc[positions][valid],
+                prediction.loc[positions][valid],
+            )
+            detail_rows.append(
+                {
+                    DATASET_COLUMN: dataset_name,
+                    SCORE_TYPE_COLUMN: score_type,
+                    "aggregation": aggregation,
+                    "correlation_group": str(group_name),
+                    "n_samples": int(valid.sum()),
+                    "plcc": plcc,
+                    "srcc": srcc,
+                }
+            )
+
+    details = pd.DataFrame(detail_rows)
+    dataset_rows = []
+    for dataset_name, group in details.groupby(DATASET_COLUMN, sort=True):
+        dataset_rows.append(
+            {
+                DATASET_COLUMN: dataset_name,
+                SCORE_TYPE_COLUMN: group[SCORE_TYPE_COLUMN].iloc[0],
+                "aggregation": group["aggregation"].iloc[0],
+                "n_groups": len(group),
+                "n_samples": int(group["n_samples"].sum()),
+                "plcc": _mean_or_nan(group["plcc"].tolist()),
+                "srcc": _mean_or_nan(group["srcc"].tolist()),
+            }
+        )
+    per_dataset = pd.DataFrame(dataset_rows)
+    return (
+        _mean_or_nan(per_dataset["plcc"].tolist()),
+        _mean_or_nan(per_dataset["srcc"].tolist()),
+        per_dataset,
+        details,
+    )
 
 
 def metric_comparison_column(item: dict[str, Any]) -> str:
@@ -489,15 +589,17 @@ def compute_metric_comparisons(
     validation: pd.DataFrame,
     validation_sample_ids: pd.Series,
     y_test: pd.Series,
-) -> list[dict[str, Any]]:
+    validation_metadata: pd.DataFrame,
+) -> tuple[list[dict[str, Any]], pd.DataFrame]:
     comparison_cfg = cfg.get("correlation_metrics", {})
     if not comparison_cfg.get("enabled", False):
-        return []
+        return [], pd.DataFrame()
 
     target_scores = y_test.reset_index(drop=True)
     validation = validation.set_index(SAMPLE_ID_COLUMN).loc[validation_sample_ids].reset_index()
 
     rows = []
+    detail_frames = []
     for item in comparison_cfg.get("items", []):
         column = metric_comparison_column(item)
         label = metric_comparison_label(item, column, cfg)
@@ -509,13 +611,21 @@ def compute_metric_comparisons(
         if not valid.any():
             raise ValueError(f"Correlation metric '{label}' has no values aligned with the test split")
 
-        plcc, srcc = safe_corr(target_scores[valid], normalized_values[valid])
+        plcc, srcc, per_dataset, details = validation_correlations(
+            target_scores[valid],
+            normalized_values[valid],
+            validation_metadata.loc[valid].reset_index(drop=True),
+        )
+        details.insert(0, "model", label)
+        details.insert(1, "source", "metric")
+        detail_frames.append(details)
         rows.append(
             {
                 "model": label,
                 "plcc": plcc,
                 "srcc": srcc,
                 "source": "metric",
+                "n_datasets": len(per_dataset),
                 "feature": item.get("feature"),
                 "column": column,
                 "higher_is_better": higher_is_better,
@@ -523,7 +633,8 @@ def compute_metric_comparisons(
             }
         )
 
-    return rows
+    detail_df = pd.concat(detail_frames, ignore_index=True) if detail_frames else pd.DataFrame()
+    return rows, detail_df
 
 
 def split_dataset(
@@ -531,6 +642,7 @@ def split_dataset(
     cfg: dict[str, Any],
     samples: Sequence[Mapping[str, Any]],
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
+    split_seed = configured_split_seed(cfg)
     usage_by_dataset: dict[str, dict[str, Any]] = {}
     for sample in samples:
         name = str(sample[DATASET_COLUMN])
@@ -564,7 +676,7 @@ def split_dataset(
                 splitter = GroupShuffleSplit(
                     n_splits=1,
                     test_size=test_size,
-                    random_state=cfg["seed"],
+                    random_state=split_seed,
                 )
                 local_train, local_validation = next(
                     splitter.split(group, groups=group[GROUP_COLUMN])
@@ -594,7 +706,13 @@ def prepare_dataset_split(
     if not validation_indices:
         raise ValueError("At least one dataset must provide regressor validation samples")
 
-    metadata = [SAMPLE_ID_COLUMN, DATASET_COLUMN, GROUP_COLUMN, SCORE_COLUMN]
+    metadata = [
+        SAMPLE_ID_COLUMN,
+        DATASET_COLUMN,
+        GROUP_COLUMN,
+        SCORE_TYPE_COLUMN,
+        SCORE_COLUMN,
+    ]
     X = dataset.drop(columns=metadata).apply(pd.to_numeric, errors="raise")
     y = dataset[SCORE_COLUMN]
     X_train = X.loc[train_indices].copy()
@@ -629,6 +747,13 @@ def cross_validation_settings(cfg: Mapping[str, Any]) -> tuple[bool, int]:
     return enabled, n_splits
 
 
+def configured_split_seed(cfg: Mapping[str, Any]) -> int:
+    value = cfg.get("split_seed")
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("split_seed must be an integer")
+    return value
+
+
 def grouped_cross_validation_splits(
     dataset: pd.DataFrame,
     cfg: Mapping[str, Any],
@@ -650,7 +775,7 @@ def grouped_cross_validation_splits(
     splitter = GroupKFold(
         n_splits=n_splits,
         shuffle=True,
-        random_state=int(cfg["seed"]),
+        random_state=configured_split_seed(cfg),
     )
     splits = []
     for train_positions, validation_positions in splitter.split(dataset, groups=groups):
@@ -946,6 +1071,7 @@ def compute_plot_importances(
     X_test: pd.DataFrame,
     y_test: pd.Series,
     cfg: dict[str, Any],
+    use_permutation_values: bool = False,
 ) -> tuple[pd.Series, pd.Series | None] | None:
     native_values = None
     try:
@@ -980,7 +1106,11 @@ def compute_plot_importances(
             stacklevel=2,
         )
 
-    if native_values is None:
+    if use_permutation_values:
+        if permutation is None:
+            return None
+        importances = pd.Series(np.abs(permutation.importances_mean), index=X_test.columns)
+    elif native_values is None:
         importances = pd.Series(np.abs(permutation.importances_mean), index=X_test.columns)
     else:
         importances = pd.Series(native_values, index=X_test.columns)
@@ -1000,11 +1130,30 @@ def plot_importance(
     y_test: pd.Series,
     out_dir: Path,
     cfg: dict[str, Any],
+    use_permutation_values: bool = False,
 ) -> Path | None:
-    computed = compute_plot_importances(model_name, model, X_test, y_test, cfg)
+    computed = compute_plot_importances(
+        model_name,
+        model,
+        X_test,
+        y_test,
+        cfg,
+        use_permutation_values=use_permutation_values,
+    )
     if computed is None:
         return None
     importances, perm_std = computed
+
+    importance_table = pd.DataFrame(
+        {
+            "feature": importances.index,
+            "importance": importances.to_numpy(),
+            "permutation_std": (
+                perm_std.reindex(importances.index).to_numpy() if perm_std is not None else np.nan
+            ),
+        }
+    )
+    importance_table.to_csv(out_dir / f"importance_{model_name}.csv", index=False)
 
     palette = importance_palette()
     colors = [palette[feature_family(name, cfg)] for name in importances.index]
@@ -1328,6 +1477,19 @@ def plot_prediction_scatter(
     if not predictions_by_model:
         return None
 
+    score_types = {
+        str(score_type)
+        for predictions in predictions_by_model.values()
+        if SCORE_TYPE_COLUMN in predictions
+        for score_type in predictions[SCORE_TYPE_COLUMN].dropna().unique()
+    }
+    if score_types == {BRADLEY_TERRY_SCORE_TYPE}:
+        score_label = "Bradley-Terry score"
+    elif score_types == {MOS_SCORE_TYPE} or not score_types:
+        score_label = "MOS"
+    else:
+        score_label = "Subjective score"
+
     with plt.rc_context(plot_rc_params(cfg)):
         fig, ax = plt.subplots(figsize=tuple(cfg.get("plot", {}).get("scatter_figsize", [8.5, 5.5])))
         ax.plot([0, 1], [0, 1], color="#9aa3ad", linestyle="--", linewidth=1.2)
@@ -1343,7 +1505,7 @@ def plot_prediction_scatter(
                 label=model_display_name(model_name, cfg),
             )
 
-        ax.set_xlabel("MOS")
+        ax.set_xlabel(score_label)
         ax.set_ylabel("Prediction")
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
@@ -1358,26 +1520,61 @@ def plot_prediction_scatter(
     return out_path
 
 
-def compute_feature_correlations(
+def compute_feature_correlations_with_details(
     X_test: pd.DataFrame,
     y_test: pd.Series,
     cfg: dict[str, Any] | None = None,
-) -> pd.DataFrame:
+    validation_metadata: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     target = pd.to_numeric(y_test.reset_index(drop=True), errors="coerce")
-    rows = []
+    if validation_metadata is None:
+        validation_metadata = pd.DataFrame(
+            {
+                DATASET_COLUMN: ["all"] * len(target),
+                GROUP_COLUMN: ["all"] * len(target),
+                SCORE_TYPE_COLUMN: [MOS_SCORE_TYPE] * len(target),
+            }
+        )
+    else:
+        validation_metadata = validation_metadata.reset_index(drop=True)
 
-    for feature_name in X_test.columns:
-        values = pd.to_numeric(X_test[feature_name].reset_index(drop=True), errors="coerce")
+    values_by_name = {
+        feature_name: pd.to_numeric(X_test[feature_name].reset_index(drop=True), errors="coerce")
+        for feature_name in X_test.columns
+    }
+    numeric = X_test.apply(pd.to_numeric, errors="coerce")
+    values_by_name["mean_features"] = numeric.mean(axis=1).reset_index(drop=True)
+    values_by_name["median_features"] = numeric.median(axis=1).reset_index(drop=True)
+
+    rows = []
+    detail_frames = []
+    for feature_name, values in values_by_name.items():
         valid = target.notna() & values.notna()
         if valid.any():
-            plcc, srcc = safe_corr(target[valid], values[valid])
+            plcc, srcc, _, details = validation_correlations(
+                target[valid],
+                values[valid],
+                validation_metadata.loc[valid].reset_index(drop=True),
+            )
         else:
             plcc, srcc = np.nan, np.nan
+            details = pd.DataFrame()
+
+        if feature_name == "mean_features":
+            family = "Mean"
+        elif feature_name == "median_features":
+            family = "Median"
+        else:
+            family = feature_family(feature_name, cfg)
+        if not details.empty:
+            details.insert(0, "feature", feature_name)
+            details.insert(1, "family", family)
+            detail_frames.append(details)
 
         rows.append(
             {
                 "feature": feature_name,
-                "family": feature_family(feature_name, cfg),
+                "family": family,
                 "plcc": plcc,
                 "srcc": srcc,
                 "abs_plcc": abs(plcc) if not np.isnan(plcc) else np.nan,
@@ -1385,41 +1582,24 @@ def compute_feature_correlations(
             }
         )
 
-    mean_values = X_test.apply(pd.to_numeric, errors="coerce").mean(axis=1).reset_index(drop=True)
-    valid = target.notna() & mean_values.notna()
-    if valid.any():
-        plcc, srcc = safe_corr(target[valid], mean_values[valid])
-    else:
-        plcc, srcc = np.nan, np.nan
-    rows.append(
-        {
-            "feature": "mean_features",
-            "family": "Mean",
-            "plcc": plcc,
-            "srcc": srcc,
-            "abs_plcc": abs(plcc) if not np.isnan(plcc) else np.nan,
-            "abs_srcc": abs(srcc) if not np.isnan(srcc) else np.nan,
-        }
-    )
+    summary = pd.DataFrame(rows).sort_values("abs_srcc", ascending=False).reset_index(drop=True)
+    details = pd.concat(detail_frames, ignore_index=True) if detail_frames else pd.DataFrame()
+    return summary, details
 
-    median_values = X_test.apply(pd.to_numeric, errors="coerce").median(axis=1).reset_index(drop=True)
-    valid = target.notna() & median_values.notna()
-    if valid.any():
-        plcc, srcc = safe_corr(target[valid], median_values[valid])
-    else:
-        plcc, srcc = np.nan, np.nan
-    rows.append(
-        {
-            "feature": "median_features",
-            "family": "Median",
-            "plcc": plcc,
-            "srcc": srcc,
-            "abs_plcc": abs(plcc) if not np.isnan(plcc) else np.nan,
-            "abs_srcc": abs(srcc) if not np.isnan(srcc) else np.nan,
-        }
-    )
 
-    return pd.DataFrame(rows).sort_values("abs_srcc", ascending=False).reset_index(drop=True)
+def compute_feature_correlations(
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+    cfg: dict[str, Any] | None = None,
+    validation_metadata: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    summary, _ = compute_feature_correlations_with_details(
+        X_test,
+        y_test,
+        cfg,
+        validation_metadata,
+    )
+    return summary
 
 
 def plot_feature_correlations(
@@ -1924,12 +2104,16 @@ def evaluate_feature_subset(
     X_test: pd.DataFrame,
     y_test: pd.Series,
     features: list[str],
+    validation_metadata: pd.DataFrame | None = None,
 ) -> tuple[float, float]:
     if not features:
         return np.nan, np.nan
     model = init_analysis_model(cfg, model_name, model_params_override)
     model.fit(X_train[features], y_train)
     pred = model.predict(X_test[features])
+    if validation_metadata is not None:
+        plcc, srcc, _, _ = validation_correlations(y_test, pred, validation_metadata)
+        return plcc, srcc
     return safe_corr(y_test, pred)
 
 
@@ -1945,6 +2129,7 @@ def forward_selection(
     y_train: pd.Series,
     X_test: pd.DataFrame,
     y_test: pd.Series,
+    validation_metadata: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     sel_cfg = cfg.get("analysis", {}).get("feature_selection", {})
     model_name = str(sel_cfg.get("model", "ridge"))
@@ -1960,7 +2145,15 @@ def forward_selection(
         for feature in remaining:
             trial = selected + [feature]
             plcc, srcc = evaluate_feature_subset(
-                cfg, model_name, model_params_override, X_train, y_train, X_test, y_test, trial
+                cfg,
+                model_name,
+                model_params_override,
+                X_train,
+                y_train,
+                X_test,
+                y_test,
+                trial,
+                validation_metadata,
             )
             candidates.append((feature_selection_score(plcc, srcc, metric), feature, plcc, srcc))
         if not candidates:
@@ -1989,6 +2182,7 @@ def backward_elimination(
     y_train: pd.Series,
     X_test: pd.DataFrame,
     y_test: pd.Series,
+    validation_metadata: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     sel_cfg = cfg.get("analysis", {}).get("feature_selection", {})
     model_name = str(sel_cfg.get("model", "ridge"))
@@ -1999,7 +2193,15 @@ def backward_elimination(
     rows = []
 
     initial_plcc, initial_srcc = evaluate_feature_subset(
-        cfg, model_name, model_params_override, X_train, y_train, X_test, y_test, selected
+        cfg,
+        model_name,
+        model_params_override,
+        X_train,
+        y_train,
+        X_test,
+        y_test,
+        selected,
+        validation_metadata,
     )
     rows.append(
         {
@@ -2020,7 +2222,15 @@ def backward_elimination(
         for feature in selected:
             trial = [item for item in selected if item != feature]
             plcc, srcc = evaluate_feature_subset(
-                cfg, model_name, model_params_override, X_train, y_train, X_test, y_test, trial
+                cfg,
+                model_name,
+                model_params_override,
+                X_train,
+                y_train,
+                X_test,
+                y_test,
+                trial,
+                validation_metadata,
             )
             candidates.append((feature_selection_score(plcc, srcc, metric), feature, plcc, srcc, trial))
         _, removed_feature, best_plcc, best_srcc, selected = max(candidates, key=lambda item: item[0])
@@ -2068,6 +2278,7 @@ def save_feature_selection_analysis(
     y_test: pd.Series,
     out_dir: Path,
     cfg: dict[str, Any],
+    validation_metadata: pd.DataFrame | None = None,
 ) -> dict[str, str | None]:
     selection_dir = ensure_dir(out_dir / "feature_selection")
     sel_cfg = cfg.get("analysis", {}).get("feature_selection", {})
@@ -2081,9 +2292,29 @@ def save_feature_selection_analysis(
 
     frames = []
     if "forward" in directions:
-        frames.append(forward_selection(cfg, features, X_train, y_train, X_test, y_test))
+        frames.append(
+            forward_selection(
+                cfg,
+                features,
+                X_train,
+                y_train,
+                X_test,
+                y_test,
+                validation_metadata,
+            )
+        )
     if "backward" in directions:
-        frames.append(backward_elimination(cfg, features, X_train, y_train, X_test, y_test))
+        frames.append(
+            backward_elimination(
+                cfg,
+                features,
+                X_train,
+                y_train,
+                X_test,
+                y_test,
+                validation_metadata,
+            )
+        )
 
     selection_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     selection_csv = selection_dir / "feature_selection.csv"
@@ -2093,6 +2324,246 @@ def save_feature_selection_analysis(
         "feature_selection_csv": str(selection_csv),
         "feature_selection_plot": str(plot_path) if plot_path else None,
     }
+
+
+def safe_output_component(value: str) -> str:
+    component = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._")
+    if not component:
+        raise ValueError(f"Dataset name cannot be converted to an output folder: {value!r}")
+    return component
+
+
+def save_correlation_details(details: pd.DataFrame, out_dir: Path, prefix: str) -> None:
+    if details.empty:
+        return
+    details.to_csv(out_dir / f"{prefix}_by_group.csv", index=False)
+    per_gt = details[details[SCORE_TYPE_COLUMN] == BRADLEY_TERRY_SCORE_TYPE]
+    if not per_gt.empty:
+        per_gt.to_csv(out_dir / f"{prefix}_per_gt.csv", index=False)
+
+
+def save_per_dataset_validation_outputs(
+    cfg: dict[str, Any],
+    regressor_samples: Sequence[Mapping[str, Any]],
+    fitted_models: Mapping[str, Any],
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+    validation_metadata: pd.DataFrame,
+    predictions_by_model: Mapping[str, pd.DataFrame],
+    out_dir: Path,
+    make_plots: bool,
+) -> dict[str, dict[str, Any]]:
+    """Save validation-only metrics and analyses in one folder per dataset."""
+
+    outputs: dict[str, dict[str, Any]] = {}
+    for dataset_name in sorted(validation_metadata[DATASET_COLUMN].astype(str).unique()):
+        mask = validation_metadata[DATASET_COLUMN].astype(str) == dataset_name
+        positions = np.flatnonzero(mask.to_numpy())
+        dataset_metadata = validation_metadata.iloc[positions].reset_index(drop=True)
+        X_validation = X_test.iloc[positions].copy()
+        y_validation = y_test.iloc[positions].copy()
+        dataset_sample_ids = dataset_metadata[SAMPLE_ID_COLUMN]
+        dataset_id_set = set(dataset_sample_ids)
+        dataset_samples = [
+            sample for sample in regressor_samples if sample[SAMPLE_ID_COLUMN] in dataset_id_set
+        ]
+
+        dataset_out_dir = ensure_dir(out_dir / "per_dataset" / safe_output_component(dataset_name))
+        output_dirs = regressor_output_dirs(dataset_out_dir)
+        dataset_metadata.to_csv(output_dirs["metadata"] / "validation_samples.csv", index=False)
+
+        result_rows: list[dict[str, Any]] = []
+        correlation_detail_frames = []
+        importance_paths: dict[str, str | None] = {}
+        shap_paths: dict[str, str | None] = {}
+        dataset_predictions: dict[str, pd.DataFrame] = {}
+        regressor_plcc: list[float] = []
+        regressor_srcc: list[float] = []
+
+        for model_name, model in fitted_models.items():
+            predictions = predictions_by_model[model_name]
+            current_predictions = predictions[
+                predictions[SAMPLE_ID_COLUMN].isin(dataset_id_set)
+            ].reset_index(drop=True)
+            dataset_predictions[model_name] = current_predictions
+            plcc, srcc, per_dataset, details = validation_correlations(
+                current_predictions["mos"],
+                current_predictions["prediction"],
+                current_predictions[[DATASET_COLUMN, GROUP_COLUMN, SCORE_TYPE_COLUMN]],
+            )
+            details.insert(0, "model", model_name)
+            details.insert(1, "source", "regressor")
+            correlation_detail_frames.append(details)
+            regressor_plcc.append(plcc)
+            regressor_srcc.append(srcc)
+            result_rows.append(
+                {
+                    "model": model_name,
+                    "plcc": plcc,
+                    "srcc": srcc,
+                    "source": "regressor",
+                    "n_datasets": len(per_dataset),
+                    "aggregation": per_dataset["aggregation"].iloc[0],
+                    "n_groups": int(per_dataset["n_groups"].iloc[0]),
+                }
+            )
+
+            if make_plots and plot_enabled(cfg, "importance"):
+                path = plot_importance(
+                    model_name,
+                    model,
+                    X_validation,
+                    y_validation,
+                    output_dirs["importances"],
+                    cfg,
+                    use_permutation_values=True,
+                )
+                importance_paths[model_name] = str(path) if path else None
+            if make_plots and plot_enabled(cfg, "shap"):
+                path = plot_shap_importance(
+                    model_name,
+                    model,
+                    X_validation,
+                    output_dirs["shap"],
+                    cfg,
+                )
+                shap_paths[model_name] = str(path) if path else None
+
+        metric_data = load_metric_comparison_data(cfg, dataset_samples)
+        metric_rows, metric_details = compute_metric_comparisons(
+            cfg,
+            metric_data,
+            dataset_sample_ids,
+            y_validation,
+            dataset_metadata,
+        )
+        result_rows.extend(metric_rows)
+        if not metric_details.empty:
+            correlation_detail_frames.append(metric_details)
+
+        if cfg["save_mean_correlations"]:
+            result_rows.append(
+                {
+                    "model": "mean",
+                    "plcc": _mean_or_nan(regressor_plcc),
+                    "srcc": _mean_or_nan(regressor_srcc),
+                    "source": "summary",
+                }
+            )
+        if cfg["save_best_correlations"]:
+            result_rows.append(
+                {
+                    "model": "best",
+                    "plcc": float(np.nanmax(regressor_plcc)),
+                    "srcc": float(np.nanmax(regressor_srcc)),
+                    "source": "summary",
+                }
+            )
+
+        results_df = (
+            pd.DataFrame(result_rows).sort_values("srcc", ascending=False).reset_index(drop=True)
+        )
+        results_df.to_csv(output_dirs["correlations"] / "correlations.csv", index=False)
+        correlation_details = (
+            pd.concat(correlation_detail_frames, ignore_index=True)
+            if correlation_detail_frames
+            else pd.DataFrame()
+        )
+        save_correlation_details(correlation_details, output_dirs["correlations"], "correlations")
+        for model_name, predictions in dataset_predictions.items():
+            predictions.to_csv(
+                output_dirs["predictions"] / f"predictions_{model_name}.csv",
+                index=False,
+            )
+
+        feature_correlations, feature_details = compute_feature_correlations_with_details(
+            X_validation,
+            y_validation,
+            cfg,
+            dataset_metadata,
+        )
+        feature_correlations.to_csv(
+            output_dirs["feature_analysis"] / "feature_correlations.csv",
+            index=False,
+        )
+        save_correlation_details(
+            feature_details,
+            output_dirs["feature_analysis"],
+            "feature_correlations",
+        )
+        feature_cross_correlations = compute_feature_cross_correlations(X_validation, cfg)
+        feature_cross_correlations.to_csv(
+            output_dirs["feature_analysis"] / "feature_cross_correlations.csv"
+        )
+
+        analysis_paths: dict[str, str | None] = {}
+        if analysis_enabled(cfg, "outliers"):
+            analysis_paths.update(
+                save_outlier_analysis(
+                    X_validation,
+                    dataset_sample_ids,
+                    dataset_predictions,
+                    dataset_out_dir,
+                    cfg,
+                )
+            )
+        if analysis_enabled(cfg, "feature_metrics"):
+            analysis_paths.update(
+                save_feature_analysis_metrics(X_validation, y_validation, dataset_out_dir, cfg)
+            )
+        if analysis_enabled(cfg, "feature_selection"):
+            analysis_paths.update(
+                save_feature_selection_analysis(
+                    X_train,
+                    y_train,
+                    X_validation,
+                    y_validation,
+                    dataset_out_dir,
+                    cfg,
+                    dataset_metadata,
+                )
+            )
+
+        if make_plots:
+            if plot_enabled(cfg, "all_importances"):
+                plot_all_importances(importance_paths, output_dirs["importances"], cfg)
+            if plot_enabled(cfg, "all_shap_importances"):
+                plot_all_shap_importances(shap_paths, output_dirs["shap"], cfg)
+            if plot_enabled(cfg, "correlations"):
+                plot_correlations(results_df, output_dirs["correlations"], cfg)
+            if plot_enabled(cfg, "feature_correlations"):
+                plot_feature_correlations(
+                    feature_correlations,
+                    results_df,
+                    output_dirs["feature_analysis"],
+                    cfg,
+                )
+            if plot_enabled(cfg, "feature_cross_correlation_matrix"):
+                plot_feature_cross_correlation_matrix(
+                    feature_cross_correlations,
+                    output_dirs["feature_analysis"],
+                    cfg,
+                )
+            if plot_enabled(cfg, "prediction_scatter"):
+                plot_prediction_scatter(dataset_predictions, output_dirs["predictions"], cfg)
+            without_metrics = results_df[results_df["source"] != "metric"].copy()
+            if plot_enabled(cfg, "correlations_without_metrics") and not without_metrics.empty:
+                plot_correlations(
+                    without_metrics,
+                    output_dirs["correlations"],
+                    cfg,
+                    filename="correlations_without_metrics.png",
+                    title="Regressor Correlation Scores",
+                )
+
+        outputs[dataset_name] = {
+            "output_dir": str(dataset_out_dir),
+            "results": results_df,
+            "analysis_paths": analysis_paths,
+        }
+    return outputs
 
 
 def experiment_run_name(cfg: Mapping[str, Any]) -> str:
@@ -2145,7 +2616,12 @@ def _run_single_experiment(
     profile_regressors = is_regressor_profiling_enabled(cfg)
     profile_rows: list[dict[str, Any]] = []
     predictions_by_model: dict[str, pd.DataFrame] = {}
-    prediction_names = dataset.loc[y_test.index, SAMPLE_ID_COLUMN].reset_index(drop=True)
+    fitted_models: dict[str, Any] = {}
+    correlation_detail_frames = []
+    validation_metadata = dataset.loc[
+        y_test.index,
+        [SAMPLE_ID_COLUMN, DATASET_COLUMN, GROUP_COLUMN, SCORE_TYPE_COLUMN],
+    ].reset_index(drop=True)
 
     for model_name, model in init_models(cfg):
         if profile_regressors:
@@ -2170,18 +2646,32 @@ def _run_single_experiment(
             model.fit(X_train, y_train)
             pred = model.predict(X_test)
 
-        plcc, srcc = safe_corr(y_test, pred)
+        fitted_models[model_name] = model
+        plcc, srcc, per_dataset, details = validation_correlations(
+            y_test,
+            pred,
+            validation_metadata,
+        )
+        details.insert(0, "model", model_name)
+        details.insert(1, "source", "regressor")
+        correlation_detail_frames.append(details)
         all_plcc.append(plcc)
         all_srcc.append(srcc)
-        predictions_by_model[model_name] = pd.DataFrame(
+        predictions = validation_metadata.copy()
+        predictions["mos"] = y_test.reset_index(drop=True)
+        predictions["prediction"] = np.asarray(pred, dtype=float).reshape(-1)
+        predictions_by_model[model_name] = predictions
+
+        results.append(
             {
-                SAMPLE_ID_COLUMN: prediction_names,
-                "mos": y_test.reset_index(drop=True),
-                "prediction": np.asarray(pred, dtype=float).reshape(-1),
+                "model": model_name,
+                "plcc": plcc,
+                "srcc": srcc,
+                "source": "regressor",
+                "n_datasets": len(per_dataset),
+                "aggregation": "macro_per_dataset" if len(per_dataset) > 1 else per_dataset["aggregation"].iloc[0],
             }
         )
-
-        results.append({"model": model_name, "plcc": plcc, "srcc": srcc, "source": "regressor"})
         if make_plots and plot_enabled(cfg, "importance"):
             imp_path = plot_importance(model_name, model, X_test, y_test, output_dirs["importances"], cfg)
             importance_paths[model_name] = str(imp_path) if imp_path else None
@@ -2189,20 +2679,22 @@ def _run_single_experiment(
             shap_path = plot_shap_importance(model_name, model, X_test, output_dirs["shap"], cfg)
             shap_paths[model_name] = str(shap_path) if shap_path else None
 
-    validation_sample_ids = dataset.loc[y_test.index, SAMPLE_ID_COLUMN].reset_index(drop=True)
+    validation_sample_ids = validation_metadata[SAMPLE_ID_COLUMN]
     validation_id_set = set(validation_sample_ids)
     validation_samples = [
         sample for sample in regressor_samples if sample[SAMPLE_ID_COLUMN] in validation_id_set
     ]
     metric_comparison_data = load_metric_comparison_data(cfg, validation_samples)
-    results.extend(
-        compute_metric_comparisons(
-            cfg,
-            metric_comparison_data,
-            validation_sample_ids,
-            y_test,
-        )
+    metric_rows, metric_details = compute_metric_comparisons(
+        cfg,
+        metric_comparison_data,
+        validation_sample_ids,
+        y_test,
+        validation_metadata,
     )
+    results.extend(metric_rows)
+    if not metric_details.empty:
+        correlation_detail_frames.append(metric_details)
 
     if cfg["save_mean_correlations"]:
         results.append(
@@ -2225,6 +2717,8 @@ def _run_single_experiment(
 
     results_df = pd.DataFrame(results).sort_values("srcc", ascending=False).reset_index(drop=True)
     results_df.to_csv(output_dirs["correlations"] / "correlations.csv", index=False)
+    correlation_details = pd.concat(correlation_detail_frames, ignore_index=True)
+    save_correlation_details(correlation_details, output_dirs["correlations"], "correlations")
     for model_name, predictions in predictions_by_model.items():
         predictions.to_csv(output_dirs["predictions"] / f"predictions_{model_name}.csv", index=False)
 
@@ -2254,8 +2748,18 @@ def _run_single_experiment(
                 ensure_dir(regressor_total_profile_path.parent)
                 total_profile.to_csv(regressor_total_profile_path, index=False)
 
-    feature_correlations = compute_feature_correlations(X_test, y_test, cfg)
+    feature_correlations, feature_correlation_details = compute_feature_correlations_with_details(
+        X_test,
+        y_test,
+        cfg,
+        validation_metadata,
+    )
     feature_correlations.to_csv(output_dirs["feature_analysis"] / "feature_correlations.csv", index=False)
+    save_correlation_details(
+        feature_correlation_details,
+        output_dirs["feature_analysis"],
+        "feature_correlations",
+    )
     X_all = pd.concat([X_train, X_test], axis=0).sort_index()
     feature_cross_correlations = compute_feature_cross_correlations(X_all, cfg)
     feature_cross_correlations.to_csv(output_dirs["feature_analysis"] / "feature_cross_correlations.csv")
@@ -2267,7 +2771,17 @@ def _run_single_experiment(
     if analysis_enabled(cfg, "feature_metrics"):
         analysis_paths.update(save_feature_analysis_metrics(X_train, y_train, out_dir, cfg))
     if analysis_enabled(cfg, "feature_selection"):
-        analysis_paths.update(save_feature_selection_analysis(X_train, y_train, X_test, y_test, out_dir, cfg))
+        analysis_paths.update(
+            save_feature_selection_analysis(
+                X_train,
+                y_train,
+                X_test,
+                y_test,
+                out_dir,
+                cfg,
+                validation_metadata,
+            )
+        )
 
     combined_importance_path = None
     combined_shap_importance_path = None
@@ -2316,6 +2830,20 @@ def _run_single_experiment(
     with open(output_dirs["metadata"] / "config.json", "w", encoding="utf-8") as handle:
         json.dump(cfg, handle, indent=2)
 
+    per_dataset_outputs = save_per_dataset_validation_outputs(
+        cfg,
+        regressor_samples,
+        fitted_models,
+        X_train,
+        y_train,
+        X_test,
+        y_test,
+        validation_metadata,
+        predictions_by_model,
+        out_dir,
+        make_plots,
+    )
+
     return {
         "dataset": dataset,
         "results": results_df,
@@ -2324,6 +2852,7 @@ def _run_single_experiment(
         "importance_paths": importance_paths,
         "shap_paths": shap_paths,
         "predictions": predictions_by_model,
+        "per_dataset": per_dataset_outputs,
         "analysis_paths": analysis_paths,
         "all_importances_path": str(combined_importance_path) if combined_importance_path else None,
         "all_shap_importances_path": (
