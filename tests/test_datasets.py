@@ -386,6 +386,24 @@ def test_feature_imputation_rejects_feature_without_finite_training_value() -> N
         prepare_dataset_split(dataset, cfg, [0, 1], [2])
 
 
+def test_regressor_failure_is_saved_to_console_output(tmp_path: Path, capsys) -> None:
+    from qualisr.regressors import run_experiment
+
+    cfg = {
+        "experiment_name": "failing-run",
+        "paths": {"plots_root": str(tmp_path)},
+        "cross_validation": {"enabled": "invalid", "n_splits": 5},
+    }
+
+    with pytest.raises(ValueError, match="must be a boolean"):
+        run_experiment(cfg, [], make_plots=False)
+
+    captured = capsys.readouterr()
+    saved = (tmp_path / "failing-run" / "log.txt").read_text(encoding="utf-8")
+    assert "ERROR: Regressor stage failed with ValueError" in captured.err
+    assert "ERROR: Regressor stage failed with ValueError" in saved
+
+
 def test_forward_selection_failure_does_not_block_backward_selection(
     tmp_path: Path,
     monkeypatch,
@@ -534,6 +552,7 @@ def test_cross_validation_run_saves_fold_and_aggregate_outputs(tmp_path: Path) -
     assert set(result["fold_results"]["fold"]) == {1, 2, 3, 4, 5}
     assert result["results"].loc[0, "n_folds"] == 5
     output_dir = Path(result["output_dir"])
+    assert (output_dir / "log.txt").is_file()
     assignments = pd.read_csv(output_dir / "metadata" / "cross_validation_folds.csv")
     predictions = pd.read_csv(output_dir / "predictions" / "predictions_linear.csv")
     assert len(assignments) == len(predictions) == 10

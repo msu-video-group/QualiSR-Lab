@@ -438,6 +438,7 @@ def run_regressors_section(
     samples: list[dict[str, Any]] | None = None,
 ) -> None:
     from qualisr.regressors import (
+        duplicate_regressor_console_output,
         extract_regressor_config,
         resolve_regressor_config_paths,
         run_experiment,
@@ -467,9 +468,10 @@ def run_regressors_section(
         regressor_cfg = deep_update(regressor_cfg, overrides)
 
     make_plots = bool(cfg.get("make_plots", True)) and not options.no_plots
-    result = run_experiment(regressor_cfg, make_plots=make_plots, samples=samples)
-    print(f"Saved regressor results to {result['output_dir']}")
-    print(result["results"].to_string(index=False))
+    with duplicate_regressor_console_output(regressor_cfg):
+        result = run_experiment(regressor_cfg, make_plots=make_plots, samples=samples)
+        print(f"Saved regressor results to {result['output_dir']}")
+        print(result["results"].to_string(index=False))
 
 
 def pipeline_options_from_namespace(args: argparse.Namespace) -> PipelineOptions:

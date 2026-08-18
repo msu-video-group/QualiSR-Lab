@@ -47,7 +47,6 @@ def test_public_api_imports() -> None:
 
 def test_packaged_configs_are_available() -> None:
     config_root = resources.files("qualisr.configs")
-    assert config_root.joinpath("default.json").is_file()
     assert config_root.joinpath("pipeline.json").is_file()
     sample_root = resources.files("qualisr.sample_data")
     assert sample_root.joinpath("features", "fr.csv").is_file()
@@ -124,7 +123,30 @@ def test_regressors_default_uses_packaged_sample_data(tmp_path) -> None:
         tmp_path=tmp_path,
     )
     assert "Saved results to" in result.stdout
-    assert (tmp_path / "plots" / "baseline@pca5" / "correlations" / "correlations.csv").is_file()
+    output_dir = tmp_path / "plots" / "baseline@pca5"
+    assert (output_dir / "correlations" / "correlations.csv").is_file()
+    console_output = (output_dir / "log.txt").read_text(encoding="utf-8")
+    assert console_output.count("Saved results to") == 1
+
+
+def test_regressor_console_output_is_duplicated(tmp_path, capsys) -> None:
+    from qualisr.regressors import duplicate_regressor_console_output
+
+    cfg = {
+        "experiment_name": "logging-test",
+        "paths": {"plots_root": str(tmp_path)},
+    }
+
+    with duplicate_regressor_console_output(cfg) as log_path:
+        print("standard output")
+        print("standard error", file=sys.stderr)
+
+    captured = capsys.readouterr()
+    saved = log_path.read_text(encoding="utf-8")
+    assert "standard output" in captured.out
+    assert "standard error" in captured.err
+    assert "standard output" in saved
+    assert "standard error" in saved
 
 
 def test_explicit_config_paths_are_resolved_from_config_directory(tmp_path, monkeypatch) -> None:
@@ -222,7 +244,10 @@ def test_regressor_main_runs_config_directory_in_order(tmp_path, monkeypatch) ->
 
     def fake_load_config_with_samples(path):
         loaded.append(path.relative_to(config_root).as_posix())
-        return {"experiment_name": path.stem}, []
+        return {
+            "experiment_name": path.stem,
+            "paths": {"plots_root": str(tmp_path / "plots")},
+        }, []
 
     def fake_run_experiment(cfg, make_plots, samples):
         runs.append((cfg["experiment_name"], make_plots, samples))
@@ -235,3 +260,5 @@ def test_regressor_main_runs_config_directory_in_order(tmp_path, monkeypatch) ->
 
     assert loaded == ["nested/a.json", "z.json"]
     assert runs == [("a", False, []), ("z", False, [])]
+    assert (tmp_path / "plots" / "a" / "log.txt").is_file()
+    assert (tmp_path / "plots" / "z" / "log.txt").is_file()

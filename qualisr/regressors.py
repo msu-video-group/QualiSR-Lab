@@ -7,9 +7,12 @@ import json
 import math
 import os
 import re
+import sys
 import time
 import warnings
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextvars import ContextVar
 from copy import deepcopy
 from fnmatch import fnmatch
 from functools import partial
@@ -98,6 +101,11 @@ PRETTY_FEATURE_NAMES = {
     "area05": "Area 0.05",
     "area075": "Area 0.75",
 }
+
+ACTIVE_REGRESSOR_CONSOLE_LOG: ContextVar[Path | None] = ContextVar(
+    "active_regressor_console_log",
+    default=None,
+)
 
 DEFAULT_NR_METRICS = ("musiq", "arniqa", "qalign", "unique", "paq2piq")
 DEFAULT_FR_METRICS = ("psnr", "ssim", "lpips-vgg", "stlpips-vgg", "pieapp", "ahiq")
@@ -2760,6 +2768,50 @@ def experiment_run_name(cfg: Mapping[str, Any]) -> str:
         return str(cfg["experiment_name"])
 
 
+class TeeTextStream:
+    """Write text to the active console stream and a duplicate log stream."""
+
+    def __init__(self, primary: Any, duplicate: Any) -> None:
+        self.primary = primary
+        self.duplicate = duplicate
+
+    def write(self, text: str) -> int:
+        written = self.primary.write(text)
+        self.duplicate.write(text)
+        self.duplicate.flush()
+        return written
+
+    def flush(self) -> None:
+        self.primary.flush()
+        self.duplicate.flush()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.primary, name)
+
+
+@contextmanager
+def duplicate_regressor_console_output(cfg: Mapping[str, Any]) -> Iterator[Path]:
+    """Mirror one regressor stage's stdout and stderr to its output directory."""
+
+    active_log_path = ACTIVE_REGRESSOR_CONSOLE_LOG.get()
+    if active_log_path is not None:
+        yield active_log_path
+        return
+
+    out_dir = ensure_dir(Path(cfg["paths"]["plots_root"]) / experiment_run_name(cfg))
+    log_path = out_dir / "log.txt"
+    with log_path.open("w", encoding="utf-8", buffering=1) as log_file:
+        token = ACTIVE_REGRESSOR_CONSOLE_LOG.set(log_path)
+        try:
+            with (
+                redirect_stdout(TeeTextStream(sys.stdout, log_file)),
+                redirect_stderr(TeeTextStream(sys.stderr, log_file)),
+            ):
+                yield log_path
+        finally:
+            ACTIVE_REGRESSOR_CONSOLE_LOG.reset(token)
+
+
 def _run_single_experiment(
     cfg: dict[str, Any],
     samples: Sequence[Mapping[str, Any]],
@@ -3298,10 +3350,18 @@ def run_experiment(
     samples: Sequence[Mapping[str, Any]],
     make_plots: bool = True,
 ) -> dict[str, Any]:
-    enabled, _ = cross_validation_settings(cfg)
-    if enabled:
-        return run_cross_validation_experiment(cfg, samples, make_plots=make_plots)
-    return _run_single_experiment(cfg, samples, make_plots=make_plots)
+    with duplicate_regressor_console_output(cfg):
+        try:
+            enabled, _ = cross_validation_settings(cfg)
+            if enabled:
+                return run_cross_validation_experiment(cfg, samples, make_plots=make_plots)
+            return _run_single_experiment(cfg, samples, make_plots=make_plots)
+        except Exception as exc:
+            print(
+                f"ERROR: Regressor stage failed with {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            raise
 
 
 def extract_regressor_config(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -3382,7 +3442,7 @@ def resolve_regressor_config_paths(cfg: dict[str, Any], base_dir: Path | None) -
 
 
 def load_packaged_config() -> dict[str, Any]:
-    config_path = resources.files("qualisr.configs").joinpath("default.json")
+    config_path = resources.files("qualisr.configs").joinpath("pipeline.json")
     with config_path.open(encoding="utf-8") as handle:
         cfg = extract_regressor_config(json.load(handle))
 
@@ -3564,9 +3624,10 @@ def main(argv: list[str] | None = None) -> None:
         if overrides:
             cfg = deep_update(cfg, overrides)
 
-        result = run_experiment(cfg, make_plots=not args.no_plots, samples=samples)
-        print(f"Saved results to {result['output_dir']}")
-        print(result["results"].to_string(index=False))
+        with duplicate_regressor_console_output(cfg):
+            result = run_experiment(cfg, make_plots=not args.no_plots, samples=samples)
+            print(f"Saved results to {result['output_dir']}")
+            print(result["results"].to_string(index=False))
 
 
 if __name__ == "__main__":

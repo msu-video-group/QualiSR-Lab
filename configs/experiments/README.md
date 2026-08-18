@@ -76,6 +76,8 @@ Combined metrics macro-average dataset-level correlations. MOS datasets are corr
 
 Each run keeps the combined outputs at its root and writes validation-only metrics and analyses under `per_dataset/<dataset>/`. Per-dataset feature importances use permutation importance on that dataset's validation samples. Feature correlations, SHAP, outliers, feature metrics, feature selection, predictions, and plots use the corresponding validation subset.
 
+The root of every experiment output also contains `log.txt`, which duplicates the regressor stage's standard output, warnings, and standard error without suppressing terminal output.
+
 Optional analyses and plots are independent. If one fails, the command prints a warning containing the part name and exception, then continues with the remaining analyses and plots. Model fitting, prediction, dataset splitting, and primary result-table generation remain strict because failures there invalidate the experiment.
 
 Missing or infinite feature values are handled by the explicitly configured preprocessing step:
