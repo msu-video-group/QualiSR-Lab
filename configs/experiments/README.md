@@ -61,6 +61,7 @@ The batch stops at the first failing configuration. Common options such as `--no
 Unless an experiment explicitly varies a setting, configurations use:
 
 - model seed 42 and split seed 42;
+- median imputation fitted on training data only, before feature scaling;
 - `MinMaxScaler` fitted on training data only;
 - Random Forest, XGBoost, and CatBoost with baseline parameters;
 - Q-Align excluded from regressor inputs;
@@ -74,6 +75,19 @@ Non-dataset feature, reference, and embedding experiments train on QualiSR-Set12
 Combined metrics macro-average dataset-level correlations. MOS datasets are correlated over all of their validation samples. RealSRQ is marked as Bradley–Terry data, so correlations are computed independently for every GT image series and then averaged; the per-GT values are also saved.
 
 Each run keeps the combined outputs at its root and writes validation-only metrics and analyses under `per_dataset/<dataset>/`. Per-dataset feature importances use permutation importance on that dataset's validation samples. Feature correlations, SHAP, outliers, feature metrics, feature selection, predictions, and plots use the corresponding validation subset.
+
+Optional analyses and plots are independent. If one fails, the command prints a warning containing the part name and exception, then continues with the remaining analyses and plots. Model fitting, prediction, dataset splitting, and primary result-table generation remain strict because failures there invalidate the experiment.
+
+Missing or infinite feature values are handled by the explicitly configured preprocessing step:
+
+```json
+"imputation": {
+  "enabled": true,
+  "strategy": "median"
+}
+```
+
+The imputer is fitted separately on each training split (and each cross-validation fold), then applied to its validation samples. A run fails explicitly if a feature has no finite training value from which to compute the configured statistic.
 
 ## Experiment matrix
 

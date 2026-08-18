@@ -54,6 +54,10 @@
       "split_seed": 42,
       "experiment_name": "datasets/cv_all",
       "scale_features": true,
+      "imputation": {
+        "enabled": true,
+        "strategy": "median"
+      },
       "cross_validation": {
         "enabled": true,
         "n_splits": 5

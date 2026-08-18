@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 from PIL import Image
 
 from qualisr.datasets import load_dataset, load_datasets
@@ -205,6 +206,7 @@ def regressor_test_config() -> dict:
         "seed": 42,
         "split_seed": 7,
         "scale_features": False,
+        "imputation": {"enabled": False, "strategy": "median"},
         "features": {
             "pca_n": 0,
             "include": ["nr"],
@@ -334,6 +336,95 @@ def test_training_split_uses_split_seed_and_keeps_gt_groups_together(tmp_path: P
     train_groups = set(dataset.loc[first_train.index, "test_case"])
     validation_groups = set(dataset.loc[first_validation.index, "test_case"])
     assert train_groups.isdisjoint(validation_groups)
+
+
+def test_feature_imputation_uses_training_statistics_only() -> None:
+    from qualisr.regressors import prepare_dataset_split
+
+    dataset = pd.DataFrame(
+        {
+            "sample_id": ["train-a", "train-b", "validation-a", "validation-b"],
+            "dataset": ["data"] * 4,
+            "test_case": ["gt-a", "gt-b", "gt-c", "gt-d"],
+            "score_type": ["mos"] * 4,
+            "score": [0.1, 0.2, 0.3, 0.4],
+            "feature_a": [1.0, 3.0, np.nan, np.inf],
+            "feature_b": [10.0, 14.0, 100.0, np.nan],
+        }
+    )
+    cfg = {
+        "scale_features": False,
+        "imputation": {"enabled": True, "strategy": "median"},
+    }
+
+    X_train, X_validation, _, _ = prepare_dataset_split(dataset, cfg, [0, 1], [2, 3])
+
+    assert X_train["feature_a"].tolist() == [1.0, 3.0]
+    assert X_validation["feature_a"].tolist() == [2.0, 2.0]
+    assert X_validation["feature_b"].tolist() == [100.0, 12.0]
+
+
+def test_feature_imputation_rejects_feature_without_finite_training_value() -> None:
+    from qualisr.regressors import prepare_dataset_split
+
+    dataset = pd.DataFrame(
+        {
+            "sample_id": ["train-a", "train-b", "validation"],
+            "dataset": ["data"] * 3,
+            "test_case": ["gt-a", "gt-b", "gt-c"],
+            "score_type": ["mos"] * 3,
+            "score": [0.1, 0.2, 0.3],
+            "feature": [np.nan, np.inf, 1.0],
+        }
+    )
+    cfg = {
+        "scale_features": False,
+        "imputation": {"enabled": True, "strategy": "median"},
+    }
+
+    with pytest.raises(ValueError, match="no finite values"):
+        prepare_dataset_split(dataset, cfg, [0, 1], [2])
+
+
+def test_forward_selection_failure_does_not_block_backward_selection(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import qualisr.regressors as regressors
+
+    def fail_forward(*args, **kwargs):
+        raise ValueError("synthetic forward failure")
+
+    backward = pd.DataFrame(
+        {
+            "direction": ["backward"],
+            "step": [0],
+            "n_features": [1],
+            "changed_feature": [""],
+            "plcc": [0.5],
+            "srcc": [0.5],
+            "features": ["feature"],
+        }
+    )
+    monkeypatch.setattr(regressors, "forward_selection", fail_forward)
+    monkeypatch.setattr(regressors, "backward_elimination", lambda *args, **kwargs: backward)
+    monkeypatch.setattr(regressors, "plot_feature_selection", lambda *args, **kwargs: None)
+    cfg = {
+        "analysis": {
+            "feature_selection": {
+                "features": ["feature"],
+                "directions": ["forward", "backward"],
+            }
+        }
+    }
+    X = pd.DataFrame({"feature": [0.0, 1.0]})
+    y = pd.Series([0.0, 1.0])
+
+    with pytest.warns(RuntimeWarning, match="forward feature selection"):
+        paths = regressors.save_feature_selection_analysis(X, y, X, y, tmp_path, cfg)
+
+    saved = pd.read_csv(paths["feature_selection_csv"])
+    assert saved["direction"].tolist() == ["backward"]
 
 
 def test_validation_correlations_pool_mos_and_average_bt_per_gt() -> None:

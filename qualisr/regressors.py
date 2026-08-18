@@ -9,9 +9,10 @@ import os
 import re
 import time
 import warnings
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from fnmatch import fnmatch
+from functools import partial
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ import pandas as pd
 from scipy.stats import pearsonr, spearmanr
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.feature_selection import chi2, f_regression, mutual_info_regression
+from sklearn.impute import SimpleImputer
 from sklearn.inspection import permutation_importance
 from sklearn.linear_model import ElasticNet, Lasso, LinearRegression, Ridge
 from sklearn.model_selection import GroupKFold, GroupShuffleSplit
@@ -637,6 +639,23 @@ def compute_metric_comparisons(
     return rows, detail_df
 
 
+def load_and_compute_metric_comparisons(
+    cfg: dict[str, Any],
+    samples: Sequence[Mapping[str, Any]],
+    validation_sample_ids: pd.Series,
+    y_test: pd.Series,
+    validation_metadata: pd.DataFrame,
+) -> tuple[list[dict[str, Any]], pd.DataFrame]:
+    validation = load_metric_comparison_data(cfg, samples)
+    return compute_metric_comparisons(
+        cfg,
+        validation,
+        validation_sample_ids,
+        y_test,
+        validation_metadata,
+    )
+
+
 def split_dataset(
     dataset: pd.DataFrame,
     cfg: dict[str, Any],
@@ -713,12 +732,61 @@ def prepare_dataset_split(
         SCORE_TYPE_COLUMN,
         SCORE_COLUMN,
     ]
-    X = dataset.drop(columns=metadata).apply(pd.to_numeric, errors="raise")
+    X = (
+        dataset.drop(columns=metadata)
+        .apply(pd.to_numeric, errors="raise")
+        .replace([np.inf, -np.inf], np.nan)
+    )
     y = dataset[SCORE_COLUMN]
     X_train = X.loc[train_indices].copy()
     X_test = X.loc[validation_indices].copy()
     y_train = y.loc[train_indices].copy()
     y_test = y.loc[validation_indices].copy()
+
+    imputation_cfg = cfg.get("imputation", {})
+    if not isinstance(imputation_cfg, Mapping):
+        raise ValueError("imputation must be an object")
+    imputation_enabled = imputation_cfg.get("enabled", False)
+    if not isinstance(imputation_enabled, bool):
+        raise ValueError("imputation.enabled must be a boolean")
+    imputation_strategy = imputation_cfg.get("strategy", "median")
+    if not isinstance(imputation_strategy, str) or imputation_strategy not in {"mean", "median"}:
+        raise ValueError("imputation.strategy must be 'mean' or 'median'")
+
+    split_indices = list(train_indices) + list(validation_indices)
+    missing_columns = X.columns[X.loc[split_indices].isna().any()].tolist()
+    if missing_columns and not imputation_enabled:
+        preview = ", ".join(missing_columns[:10])
+        suffix = "" if len(missing_columns) <= 10 else f", ... ({len(missing_columns)} total)"
+        raise ValueError(
+            "Feature matrices contain missing or non-finite values in columns: "
+            f"{preview}{suffix}. Enable regressors.config.imputation to handle them."
+        )
+
+    if imputation_enabled:
+        all_missing_columns = X_train.columns[X_train.isna().all()].tolist()
+        if all_missing_columns:
+            preview = ", ".join(all_missing_columns[:10])
+            suffix = (
+                ""
+                if len(all_missing_columns) <= 10
+                else f", ... ({len(all_missing_columns)} total)"
+            )
+            raise ValueError(
+                "Cannot fit feature imputation because the training split has no finite values "
+                f"for columns: {preview}{suffix}"
+            )
+        imputer = SimpleImputer(strategy=imputation_strategy)
+        X_train = pd.DataFrame(
+            imputer.fit_transform(X_train),
+            columns=X.columns,
+            index=X_train.index,
+        )
+        X_test = pd.DataFrame(
+            imputer.transform(X_test),
+            columns=X.columns,
+            index=X_test.index,
+        )
 
     if cfg["scale_features"]:
         scaler = MinMaxScaler()
@@ -1801,6 +1869,26 @@ def analysis_enabled(cfg: dict[str, Any], section: str) -> bool:
     return bool(section_cfg.get("enabled", False)) if isinstance(section_cfg, dict) else False
 
 
+def run_optional_regressor_part(
+    name: str,
+    operation: Callable[[], Any],
+    default: Any = None,
+) -> Any:
+    """Run one independent analysis/plot without aborting the regressor run."""
+
+    try:
+        return operation()
+    except Exception as exc:
+        plt.close("all")
+        warnings.warn(
+            f"ERROR: Regressor analysis/plot '{name}' failed with {type(exc).__name__}: {exc}. "
+            "Continuing with the remaining parts.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return default
+
+
 def resolve_feature_specs(specs: Any, columns: pd.Index) -> list[str]:
     if specs is None or specs == []:
         return list(columns)
@@ -1874,7 +1962,14 @@ def compute_prediction_outliers(predictions_by_model: dict[str, pd.DataFrame]) -
     base["max_abs_error"] = base[residual_columns].max(axis=1)
     base["mean_abs_error"] = base[residual_columns].mean(axis=1)
     base["prediction_std"] = base[prediction_columns].std(axis=1)
-    base["worst_model"] = base[residual_columns].idxmax(axis=1).str.replace("abs_error_", "", regex=False)
+    residuals = base[residual_columns]
+    valid_residuals = residuals.notna().any(axis=1)
+    base["worst_model"] = pd.Series(pd.NA, index=base.index, dtype="string")
+    base.loc[valid_residuals, "worst_model"] = (
+        residuals.loc[valid_residuals]
+        .idxmax(axis=1)
+        .str.replace("abs_error_", "", regex=False)
+    )
     return base.sort_values("max_abs_error", ascending=False).reset_index(drop=True)
 
 
@@ -1903,7 +1998,6 @@ def plot_outlier_scores(
         ax.set_yticklabels(labels)
         ax.set_xlabel(score_column.replace("_", " "))
         ax.set_title(title)
-        fig.tight_layout()
 
     save_plot(fig, out_path, cfg)
     plt.close(fig)
@@ -2292,8 +2386,10 @@ def save_feature_selection_analysis(
 
     frames = []
     if "forward" in directions:
-        frames.append(
-            forward_selection(
+        forward = run_optional_regressor_part(
+            f"forward feature selection ({selection_dir})",
+            partial(
+                forward_selection,
                 cfg,
                 features,
                 X_train,
@@ -2301,11 +2397,15 @@ def save_feature_selection_analysis(
                 X_test,
                 y_test,
                 validation_metadata,
-            )
+            ),
         )
+        if forward is not None:
+            frames.append(forward)
     if "backward" in directions:
-        frames.append(
-            backward_elimination(
+        backward = run_optional_regressor_part(
+            f"backward feature selection ({selection_dir})",
+            partial(
+                backward_elimination,
                 cfg,
                 features,
                 X_train,
@@ -2313,13 +2413,18 @@ def save_feature_selection_analysis(
                 X_test,
                 y_test,
                 validation_metadata,
-            )
+            ),
         )
+        if backward is not None:
+            frames.append(backward)
 
     selection_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     selection_csv = selection_dir / "feature_selection.csv"
     selection_df.to_csv(selection_csv, index=False)
-    plot_path = plot_feature_selection(selection_df, selection_dir, cfg)
+    plot_path = run_optional_regressor_part(
+        f"feature-selection plot ({selection_dir})",
+        partial(plot_feature_selection, selection_df, selection_dir, cfg),
+    )
     return {
         "feature_selection_csv": str(selection_csv),
         "feature_selection_plot": str(plot_path) if plot_path else None,
@@ -2411,33 +2516,45 @@ def save_per_dataset_validation_outputs(
             )
 
             if make_plots and plot_enabled(cfg, "importance"):
-                path = plot_importance(
-                    model_name,
-                    model,
-                    X_validation,
-                    y_validation,
-                    output_dirs["importances"],
-                    cfg,
-                    use_permutation_values=True,
+                path = run_optional_regressor_part(
+                    f"{dataset_name}/{model_name} feature importance",
+                    partial(
+                        plot_importance,
+                        model_name,
+                        model,
+                        X_validation,
+                        y_validation,
+                        output_dirs["importances"],
+                        cfg,
+                        use_permutation_values=True,
+                    ),
                 )
                 importance_paths[model_name] = str(path) if path else None
             if make_plots and plot_enabled(cfg, "shap"):
-                path = plot_shap_importance(
-                    model_name,
-                    model,
-                    X_validation,
-                    output_dirs["shap"],
-                    cfg,
+                path = run_optional_regressor_part(
+                    f"{dataset_name}/{model_name} SHAP importance",
+                    partial(
+                        plot_shap_importance,
+                        model_name,
+                        model,
+                        X_validation,
+                        output_dirs["shap"],
+                        cfg,
+                    ),
                 )
                 shap_paths[model_name] = str(path) if path else None
 
-        metric_data = load_metric_comparison_data(cfg, dataset_samples)
-        metric_rows, metric_details = compute_metric_comparisons(
-            cfg,
-            metric_data,
-            dataset_sample_ids,
-            y_validation,
-            dataset_metadata,
+        metric_rows, metric_details = run_optional_regressor_part(
+            f"{dataset_name} configured metric comparisons",
+            partial(
+                load_and_compute_metric_comparisons,
+                cfg,
+                dataset_samples,
+                dataset_sample_ids,
+                y_validation,
+                dataset_metadata,
+            ),
+            default=([], pd.DataFrame()),
         )
         result_rows.extend(metric_rows)
         if not metric_details.empty:
@@ -2478,84 +2595,154 @@ def save_per_dataset_validation_outputs(
                 index=False,
             )
 
-        feature_correlations, feature_details = compute_feature_correlations_with_details(
-            X_validation,
-            y_validation,
-            cfg,
-            dataset_metadata,
+        feature_correlations, feature_details = run_optional_regressor_part(
+            f"{dataset_name} feature correlations",
+            partial(
+                compute_feature_correlations_with_details,
+                X_validation,
+                y_validation,
+                cfg,
+                dataset_metadata,
+            ),
+            default=(pd.DataFrame(), pd.DataFrame()),
         )
-        feature_correlations.to_csv(
-            output_dirs["feature_analysis"] / "feature_correlations.csv",
-            index=False,
+        if not feature_correlations.empty:
+            feature_correlations.to_csv(
+                output_dirs["feature_analysis"] / "feature_correlations.csv",
+                index=False,
+            )
+            save_correlation_details(
+                feature_details,
+                output_dirs["feature_analysis"],
+                "feature_correlations",
+            )
+        feature_cross_correlations = run_optional_regressor_part(
+            f"{dataset_name} feature cross-correlations",
+            partial(compute_feature_cross_correlations, X_validation, cfg),
+            default=pd.DataFrame(),
         )
-        save_correlation_details(
-            feature_details,
-            output_dirs["feature_analysis"],
-            "feature_correlations",
-        )
-        feature_cross_correlations = compute_feature_cross_correlations(X_validation, cfg)
-        feature_cross_correlations.to_csv(
-            output_dirs["feature_analysis"] / "feature_cross_correlations.csv"
-        )
+        if not feature_cross_correlations.empty:
+            feature_cross_correlations.to_csv(
+                output_dirs["feature_analysis"] / "feature_cross_correlations.csv"
+            )
 
         analysis_paths: dict[str, str | None] = {}
         if analysis_enabled(cfg, "outliers"):
             analysis_paths.update(
-                save_outlier_analysis(
-                    X_validation,
-                    dataset_sample_ids,
-                    dataset_predictions,
-                    dataset_out_dir,
-                    cfg,
+                run_optional_regressor_part(
+                    f"{dataset_name} outlier analysis",
+                    partial(
+                        save_outlier_analysis,
+                        X_validation,
+                        dataset_sample_ids,
+                        dataset_predictions,
+                        dataset_out_dir,
+                        cfg,
+                    ),
+                    default={},
                 )
             )
         if analysis_enabled(cfg, "feature_metrics"):
             analysis_paths.update(
-                save_feature_analysis_metrics(X_validation, y_validation, dataset_out_dir, cfg)
+                run_optional_regressor_part(
+                    f"{dataset_name} feature metrics",
+                    partial(
+                        save_feature_analysis_metrics,
+                        X_validation,
+                        y_validation,
+                        dataset_out_dir,
+                        cfg,
+                    ),
+                    default={},
+                )
             )
         if analysis_enabled(cfg, "feature_selection"):
             analysis_paths.update(
-                save_feature_selection_analysis(
-                    X_train,
-                    y_train,
-                    X_validation,
-                    y_validation,
-                    dataset_out_dir,
-                    cfg,
-                    dataset_metadata,
+                run_optional_regressor_part(
+                    f"{dataset_name} feature selection",
+                    partial(
+                        save_feature_selection_analysis,
+                        X_train,
+                        y_train,
+                        X_validation,
+                        y_validation,
+                        dataset_out_dir,
+                        cfg,
+                        dataset_metadata,
+                    ),
+                    default={},
                 )
             )
 
         if make_plots:
             if plot_enabled(cfg, "all_importances"):
-                plot_all_importances(importance_paths, output_dirs["importances"], cfg)
+                run_optional_regressor_part(
+                    f"{dataset_name} combined feature importances plot",
+                    partial(
+                        plot_all_importances,
+                        importance_paths,
+                        output_dirs["importances"],
+                        cfg,
+                    ),
+                )
             if plot_enabled(cfg, "all_shap_importances"):
-                plot_all_shap_importances(shap_paths, output_dirs["shap"], cfg)
+                run_optional_regressor_part(
+                    f"{dataset_name} combined SHAP importances plot",
+                    partial(
+                        plot_all_shap_importances,
+                        shap_paths,
+                        output_dirs["shap"],
+                        cfg,
+                    ),
+                )
             if plot_enabled(cfg, "correlations"):
-                plot_correlations(results_df, output_dirs["correlations"], cfg)
+                run_optional_regressor_part(
+                    f"{dataset_name} correlations plot",
+                    partial(plot_correlations, results_df, output_dirs["correlations"], cfg),
+                )
             if plot_enabled(cfg, "feature_correlations"):
-                plot_feature_correlations(
-                    feature_correlations,
-                    results_df,
-                    output_dirs["feature_analysis"],
-                    cfg,
+                run_optional_regressor_part(
+                    f"{dataset_name} feature-correlations plot",
+                    partial(
+                        plot_feature_correlations,
+                        feature_correlations,
+                        results_df,
+                        output_dirs["feature_analysis"],
+                        cfg,
+                    ),
                 )
             if plot_enabled(cfg, "feature_cross_correlation_matrix"):
-                plot_feature_cross_correlation_matrix(
-                    feature_cross_correlations,
-                    output_dirs["feature_analysis"],
-                    cfg,
+                run_optional_regressor_part(
+                    f"{dataset_name} feature cross-correlation matrix plot",
+                    partial(
+                        plot_feature_cross_correlation_matrix,
+                        feature_cross_correlations,
+                        output_dirs["feature_analysis"],
+                        cfg,
+                    ),
                 )
             if plot_enabled(cfg, "prediction_scatter"):
-                plot_prediction_scatter(dataset_predictions, output_dirs["predictions"], cfg)
+                run_optional_regressor_part(
+                    f"{dataset_name} prediction scatter plot",
+                    partial(
+                        plot_prediction_scatter,
+                        dataset_predictions,
+                        output_dirs["predictions"],
+                        cfg,
+                    ),
+                )
             without_metrics = results_df[results_df["source"] != "metric"].copy()
             if plot_enabled(cfg, "correlations_without_metrics") and not without_metrics.empty:
-                plot_correlations(
-                    without_metrics,
-                    output_dirs["correlations"],
-                    cfg,
-                    filename="correlations_without_metrics.png",
-                    title="Regressor Correlation Scores",
+                run_optional_regressor_part(
+                    f"{dataset_name} regressor-only correlations plot",
+                    partial(
+                        plot_correlations,
+                        without_metrics,
+                        output_dirs["correlations"],
+                        cfg,
+                        filename="correlations_without_metrics.png",
+                        title="Regressor Correlation Scores",
+                    ),
                 )
 
         outputs[dataset_name] = {
@@ -2673,10 +2860,31 @@ def _run_single_experiment(
             }
         )
         if make_plots and plot_enabled(cfg, "importance"):
-            imp_path = plot_importance(model_name, model, X_test, y_test, output_dirs["importances"], cfg)
+            imp_path = run_optional_regressor_part(
+                f"{model_name} feature importance",
+                partial(
+                    plot_importance,
+                    model_name,
+                    model,
+                    X_test,
+                    y_test,
+                    output_dirs["importances"],
+                    cfg,
+                ),
+            )
             importance_paths[model_name] = str(imp_path) if imp_path else None
         if make_plots and plot_enabled(cfg, "shap"):
-            shap_path = plot_shap_importance(model_name, model, X_test, output_dirs["shap"], cfg)
+            shap_path = run_optional_regressor_part(
+                f"{model_name} SHAP importance",
+                partial(
+                    plot_shap_importance,
+                    model_name,
+                    model,
+                    X_test,
+                    output_dirs["shap"],
+                    cfg,
+                ),
+            )
             shap_paths[model_name] = str(shap_path) if shap_path else None
 
     validation_sample_ids = validation_metadata[SAMPLE_ID_COLUMN]
@@ -2684,13 +2892,17 @@ def _run_single_experiment(
     validation_samples = [
         sample for sample in regressor_samples if sample[SAMPLE_ID_COLUMN] in validation_id_set
     ]
-    metric_comparison_data = load_metric_comparison_data(cfg, validation_samples)
-    metric_rows, metric_details = compute_metric_comparisons(
-        cfg,
-        metric_comparison_data,
-        validation_sample_ids,
-        y_test,
-        validation_metadata,
+    metric_rows, metric_details = run_optional_regressor_part(
+        "configured metric comparisons",
+        partial(
+            load_and_compute_metric_comparisons,
+            cfg,
+            validation_samples,
+            validation_sample_ids,
+            y_test,
+            validation_metadata,
+        ),
+        default=([], pd.DataFrame()),
     )
     results.extend(metric_rows)
     if not metric_details.empty:
@@ -2748,38 +2960,78 @@ def _run_single_experiment(
                 ensure_dir(regressor_total_profile_path.parent)
                 total_profile.to_csv(regressor_total_profile_path, index=False)
 
-    feature_correlations, feature_correlation_details = compute_feature_correlations_with_details(
-        X_test,
-        y_test,
-        cfg,
-        validation_metadata,
+    feature_correlations, feature_correlation_details = run_optional_regressor_part(
+        "feature correlations",
+        partial(
+            compute_feature_correlations_with_details,
+            X_test,
+            y_test,
+            cfg,
+            validation_metadata,
+        ),
+        default=(pd.DataFrame(), pd.DataFrame()),
     )
-    feature_correlations.to_csv(output_dirs["feature_analysis"] / "feature_correlations.csv", index=False)
-    save_correlation_details(
-        feature_correlation_details,
-        output_dirs["feature_analysis"],
-        "feature_correlations",
-    )
+    if not feature_correlations.empty:
+        feature_correlations.to_csv(
+            output_dirs["feature_analysis"] / "feature_correlations.csv",
+            index=False,
+        )
+        save_correlation_details(
+            feature_correlation_details,
+            output_dirs["feature_analysis"],
+            "feature_correlations",
+        )
     X_all = pd.concat([X_train, X_test], axis=0).sort_index()
-    feature_cross_correlations = compute_feature_cross_correlations(X_all, cfg)
-    feature_cross_correlations.to_csv(output_dirs["feature_analysis"] / "feature_cross_correlations.csv")
+    feature_cross_correlations = run_optional_regressor_part(
+        "feature cross-correlations",
+        partial(compute_feature_cross_correlations, X_all, cfg),
+        default=pd.DataFrame(),
+    )
+    if not feature_cross_correlations.empty:
+        feature_cross_correlations.to_csv(
+            output_dirs["feature_analysis"] / "feature_cross_correlations.csv"
+        )
 
     analysis_paths: dict[str, str | None] = {}
     names_all = dataset.loc[X_all.index, SAMPLE_ID_COLUMN].reset_index(drop=True)
     if analysis_enabled(cfg, "outliers"):
-        analysis_paths.update(save_outlier_analysis(X_all, names_all, predictions_by_model, out_dir, cfg))
+        analysis_paths.update(
+            run_optional_regressor_part(
+                "outlier analysis",
+                partial(
+                    save_outlier_analysis,
+                    X_all,
+                    names_all,
+                    predictions_by_model,
+                    out_dir,
+                    cfg,
+                ),
+                default={},
+            )
+        )
     if analysis_enabled(cfg, "feature_metrics"):
-        analysis_paths.update(save_feature_analysis_metrics(X_train, y_train, out_dir, cfg))
+        analysis_paths.update(
+            run_optional_regressor_part(
+                "feature metrics",
+                partial(save_feature_analysis_metrics, X_train, y_train, out_dir, cfg),
+                default={},
+            )
+        )
     if analysis_enabled(cfg, "feature_selection"):
         analysis_paths.update(
-            save_feature_selection_analysis(
-                X_train,
-                y_train,
-                X_test,
-                y_test,
-                out_dir,
-                cfg,
-                validation_metadata,
+            run_optional_regressor_part(
+                "feature selection",
+                partial(
+                    save_feature_selection_analysis,
+                    X_train,
+                    y_train,
+                    X_test,
+                    y_test,
+                    out_dir,
+                    cfg,
+                    validation_metadata,
+                ),
+                default={},
             )
         )
 
@@ -2792,56 +3044,88 @@ def _run_single_experiment(
     prediction_scatter_path = None
     if make_plots:
         if plot_enabled(cfg, "all_importances"):
-            combined_importance_path = plot_all_importances(importance_paths, output_dirs["importances"], cfg)
+            combined_importance_path = run_optional_regressor_part(
+                "combined feature importances plot",
+                partial(plot_all_importances, importance_paths, output_dirs["importances"], cfg),
+            )
         if plot_enabled(cfg, "all_shap_importances"):
-            combined_shap_importance_path = plot_all_shap_importances(shap_paths, output_dirs["shap"], cfg)
+            combined_shap_importance_path = run_optional_regressor_part(
+                "combined SHAP importances plot",
+                partial(plot_all_shap_importances, shap_paths, output_dirs["shap"], cfg),
+            )
         if plot_enabled(cfg, "correlations"):
-            correlations_path = plot_correlations(results_df, output_dirs["correlations"], cfg)
+            correlations_path = run_optional_regressor_part(
+                "correlations plot",
+                partial(plot_correlations, results_df, output_dirs["correlations"], cfg),
+            )
         if plot_enabled(cfg, "feature_correlations"):
-            feature_correlations_path = plot_feature_correlations(
-                feature_correlations,
-                results_df,
-                output_dirs["feature_analysis"],
-                cfg,
+            feature_correlations_path = run_optional_regressor_part(
+                "feature-correlations plot",
+                partial(
+                    plot_feature_correlations,
+                    feature_correlations,
+                    results_df,
+                    output_dirs["feature_analysis"],
+                    cfg,
+                ),
             )
         if plot_enabled(cfg, "feature_cross_correlation_matrix"):
-            feature_cross_correlations_path = plot_feature_cross_correlation_matrix(
-                feature_cross_correlations,
-                output_dirs["feature_analysis"],
-                cfg,
+            feature_cross_correlations_path = run_optional_regressor_part(
+                "feature cross-correlation matrix plot",
+                partial(
+                    plot_feature_cross_correlation_matrix,
+                    feature_cross_correlations,
+                    output_dirs["feature_analysis"],
+                    cfg,
+                ),
             )
         if plot_enabled(cfg, "prediction_scatter"):
-            prediction_scatter_path = plot_prediction_scatter(
-                predictions_by_model, output_dirs["predictions"], cfg
+            prediction_scatter_path = run_optional_regressor_part(
+                "prediction scatter plot",
+                partial(
+                    plot_prediction_scatter,
+                    predictions_by_model,
+                    output_dirs["predictions"],
+                    cfg,
+                ),
             )
         if "source" in results_df.columns:
             without_metrics = results_df[results_df["source"] != "metric"].copy()
         else:
             without_metrics = results_df.copy()
         if plot_enabled(cfg, "correlations_without_metrics") and not without_metrics.empty:
-            correlations_without_metrics_path = plot_correlations(
-                without_metrics,
-                output_dirs["correlations"],
-                cfg,
-                filename="correlations_without_metrics.png",
-                title="Regressor Correlation Scores",
+            correlations_without_metrics_path = run_optional_regressor_part(
+                "regressor-only correlations plot",
+                partial(
+                    plot_correlations,
+                    without_metrics,
+                    output_dirs["correlations"],
+                    cfg,
+                    filename="correlations_without_metrics.png",
+                    title="Regressor Correlation Scores",
+                ),
             )
 
     with open(output_dirs["metadata"] / "config.json", "w", encoding="utf-8") as handle:
         json.dump(cfg, handle, indent=2)
 
-    per_dataset_outputs = save_per_dataset_validation_outputs(
-        cfg,
-        regressor_samples,
-        fitted_models,
-        X_train,
-        y_train,
-        X_test,
-        y_test,
-        validation_metadata,
-        predictions_by_model,
-        out_dir,
-        make_plots,
+    per_dataset_outputs = run_optional_regressor_part(
+        "per-dataset validation outputs",
+        partial(
+            save_per_dataset_validation_outputs,
+            cfg,
+            regressor_samples,
+            fitted_models,
+            X_train,
+            y_train,
+            X_test,
+            y_test,
+            validation_metadata,
+            predictions_by_model,
+            out_dir,
+            make_plots,
+        ),
+        default={},
     )
 
     return {

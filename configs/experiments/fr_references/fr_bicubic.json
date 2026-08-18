@@ -62,6 +62,10 @@
       "split_seed": 42,
       "experiment_name": "fr_references/fr_bicubic",
       "scale_features": true,
+      "imputation": {
+        "enabled": true,
+        "strategy": "median"
+      },
       "cross_validation": {
         "enabled": false,
         "n_splits": 5

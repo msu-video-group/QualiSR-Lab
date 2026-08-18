@@ -73,6 +73,11 @@ def test_public_api_loads_packaged_configs() -> None:
         "n_splits": 5,
     }
     assert pipeline_cfg["regressors"]["config"]["split_seed"] == 42
+    assert pipeline_cfg["regressors"]["config"]["imputation"] == {
+        "enabled": True,
+        "strategy": "median",
+    }
+    assert regressor_cfg["imputation"] == {"enabled": True, "strategy": "median"}
     assert "qualisr/sample_data" in regressor_cfg["paths"]["features_root"].replace("\\", "/")
 
 

@@ -52,6 +52,10 @@
       "split_seed": 42,
       "experiment_name": "datasets/train_dsr_dataset",
       "scale_features": true,
+      "imputation": {
+        "enabled": true,
+        "strategy": "median"
+      },
       "cross_validation": {
         "enabled": false,
         "n_splits": 5

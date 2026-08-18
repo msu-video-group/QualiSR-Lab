@@ -61,6 +61,10 @@
       "split_seed": 42,
       "experiment_name": "datasets/qualisr_impact_without_qualisr_without_stats",
       "scale_features": true,
+      "imputation": {
+        "enabled": true,
+        "strategy": "median"
+      },
       "cross_validation": {
         "enabled": false,
         "n_splits": 5
