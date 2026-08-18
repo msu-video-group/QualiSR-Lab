@@ -256,6 +256,7 @@ SAMPLE_ID_COLUMN = "sample_id"
 SCORE_COLUMN = "score"
 DATASET_COLUMN = "dataset"
 GROUP_COLUMN = "test_case"
+CORRELATION_GROUP_COLUMN = "correlation_group"
 SCORE_TYPE_COLUMN = "score_type"
 MOS_SCORE_TYPE = "mos"
 BRADLEY_TERRY_SCORE_TYPE = "bradley_terry"
@@ -263,6 +264,7 @@ FEATURE_METADATA_COLUMNS = {
     SAMPLE_ID_COLUMN,
     DATASET_COLUMN,
     GROUP_COLUMN,
+    CORRELATION_GROUP_COLUMN,
     SCORE_TYPE_COLUMN,
     "rel_path",
     "sr_method",
@@ -359,6 +361,9 @@ def build_dataset_group(cfg: dict[str, Any], samples: Sequence[Mapping[str, Any]
             SAMPLE_ID_COLUMN: [str(sample[SAMPLE_ID_COLUMN]) for sample in samples],
             DATASET_COLUMN: [str(sample[DATASET_COLUMN]) for sample in samples],
             GROUP_COLUMN: [str(sample[GROUP_COLUMN]) for sample in samples],
+            CORRELATION_GROUP_COLUMN: [
+                str(sample[CORRELATION_GROUP_COLUMN]) for sample in samples
+            ],
             SCORE_TYPE_COLUMN: [
                 str(sample.get(SCORE_TYPE_COLUMN, MOS_SCORE_TYPE)) for sample in samples
             ],
@@ -402,6 +407,7 @@ def build_dataset(cfg: dict[str, Any], samples: Sequence[Mapping[str, Any]]) -> 
             SAMPLE_ID_COLUMN,
             DATASET_COLUMN,
             GROUP_COLUMN,
+            CORRELATION_GROUP_COLUMN,
             SCORE_TYPE_COLUMN,
             SCORE_COLUMN,
         }
@@ -424,7 +430,7 @@ def validation_correlations(
     y_pred: Any,
     metadata: pd.DataFrame,
 ) -> tuple[float, float, pd.DataFrame, pd.DataFrame]:
-    """Compute MOS correlations per dataset and BT correlations per GT series."""
+    """Compute pooled MOS correlations and per-comparison-group BT correlations."""
 
     target = pd.Series(np.asarray(y_true, dtype=float).reshape(-1)).reset_index(drop=True)
     prediction = pd.Series(np.asarray(y_pred, dtype=float).reshape(-1)).reset_index(drop=True)
@@ -432,7 +438,12 @@ def validation_correlations(
     if len(target) != len(prediction) or len(target) != len(metadata):
         raise ValueError("Validation values and metadata must have identical lengths")
 
-    required = {DATASET_COLUMN, GROUP_COLUMN, SCORE_TYPE_COLUMN}
+    required = {
+        DATASET_COLUMN,
+        GROUP_COLUMN,
+        CORRELATION_GROUP_COLUMN,
+        SCORE_TYPE_COLUMN,
+    }
     missing = sorted(required - set(metadata.columns))
     if missing:
         raise ValueError(f"Validation metadata is missing columns: {missing}")
@@ -447,8 +458,8 @@ def validation_correlations(
             )
         score_type = score_types[0]
         if score_type == BRADLEY_TERRY_SCORE_TYPE:
-            groups = dataset_metadata.groupby(GROUP_COLUMN, sort=True)
-            aggregation = "mean_per_gt"
+            groups = dataset_metadata.groupby(CORRELATION_GROUP_COLUMN, sort=True)
+            aggregation = "mean_per_comparison_group"
         elif score_type == MOS_SCORE_TYPE:
             groups = [("all", dataset_metadata)]
             aggregation = "pooled"
@@ -469,7 +480,7 @@ def validation_correlations(
                     DATASET_COLUMN: dataset_name,
                     SCORE_TYPE_COLUMN: score_type,
                     "aggregation": aggregation,
-                    "correlation_group": str(group_name),
+                    CORRELATION_GROUP_COLUMN: str(group_name),
                     "n_samples": int(valid.sum()),
                     "plcc": plcc,
                     "srcc": srcc,
@@ -737,6 +748,7 @@ def prepare_dataset_split(
         SAMPLE_ID_COLUMN,
         DATASET_COLUMN,
         GROUP_COLUMN,
+        CORRELATION_GROUP_COLUMN,
         SCORE_TYPE_COLUMN,
         SCORE_COLUMN,
     ]
@@ -1608,6 +1620,7 @@ def compute_feature_correlations_with_details(
             {
                 DATASET_COLUMN: ["all"] * len(target),
                 GROUP_COLUMN: ["all"] * len(target),
+                CORRELATION_GROUP_COLUMN: ["all"] * len(target),
                 SCORE_TYPE_COLUMN: [MOS_SCORE_TYPE] * len(target),
             }
         )
@@ -2450,9 +2463,9 @@ def save_correlation_details(details: pd.DataFrame, out_dir: Path, prefix: str) 
     if details.empty:
         return
     details.to_csv(out_dir / f"{prefix}_by_group.csv", index=False)
-    per_gt = details[details[SCORE_TYPE_COLUMN] == BRADLEY_TERRY_SCORE_TYPE]
-    if not per_gt.empty:
-        per_gt.to_csv(out_dir / f"{prefix}_per_gt.csv", index=False)
+    bt_groups = details[details[SCORE_TYPE_COLUMN] == BRADLEY_TERRY_SCORE_TYPE]
+    if not bt_groups.empty:
+        bt_groups.to_csv(out_dir / f"{prefix}_per_comparison_group.csv", index=False)
 
 
 def save_per_dataset_validation_outputs(
@@ -2504,7 +2517,14 @@ def save_per_dataset_validation_outputs(
             plcc, srcc, per_dataset, details = validation_correlations(
                 current_predictions["mos"],
                 current_predictions["prediction"],
-                current_predictions[[DATASET_COLUMN, GROUP_COLUMN, SCORE_TYPE_COLUMN]],
+                current_predictions[
+                    [
+                        DATASET_COLUMN,
+                        GROUP_COLUMN,
+                        CORRELATION_GROUP_COLUMN,
+                        SCORE_TYPE_COLUMN,
+                    ]
+                ],
             )
             details.insert(0, "model", model_name)
             details.insert(1, "source", "regressor")
@@ -2859,7 +2879,13 @@ def _run_single_experiment(
     correlation_detail_frames = []
     validation_metadata = dataset.loc[
         y_test.index,
-        [SAMPLE_ID_COLUMN, DATASET_COLUMN, GROUP_COLUMN, SCORE_TYPE_COLUMN],
+        [
+            SAMPLE_ID_COLUMN,
+            DATASET_COLUMN,
+            GROUP_COLUMN,
+            CORRELATION_GROUP_COLUMN,
+            SCORE_TYPE_COLUMN,
+        ],
     ].reset_index(drop=True)
 
     for model_name, model in init_models(cfg):
@@ -3487,6 +3513,8 @@ def load_feature_bundle_samples(
                 "sample_id": f"{dataset_name}/{method}/{test_case}.npy.gz",
                 "dataset": dataset_name,
                 "test_case": test_case,
+                "correlation_group": test_case,
+                "score_type": MOS_SCORE_TYPE,
                 "method": method,
                 "score": float(row["score"]),
                 "features_root": str(features_root),

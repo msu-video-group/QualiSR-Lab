@@ -54,6 +54,7 @@ def test_qualisr_samples_have_stable_ids_and_default_heatmaps(tmp_path: Path) ->
     assert [sample["score"] for sample in samples] == [0.0, 1.0]
     assert samples[0]["sample_id"] == "QualiSR-Set120/PASD/0001.npy.gz"
     assert samples[0]["score_type"] == "mos"
+    assert samples[0]["correlation_group"] == "0001"
     assert samples[0]["heatmap_path"] == str(root / "heatmaps" / "PASD" / "0001.npy.gz")
     assert Path(samples[0]["sr_path"]).is_absolute()
 
@@ -157,6 +158,12 @@ def test_realsrq_heatmaps_use_flat_heatmaps_directory(tmp_path: Path, monkeypatc
     samples = parse_realsrq(str(tmp_path), include_refs=False)
 
     assert {sample["score_type"] for sample in samples} == {"bradley_terry"}
+    assert samples[0]["test_case"] == "Buildings_001"
+    assert samples[0]["correlation_group"] == "Buildings_001_LR2"
+    assert samples[9]["correlation_group"] == "Buildings_001_LR2"
+    assert samples[10]["correlation_group"] == "Buildings_001_LR3"
+    assert samples[19]["correlation_group"] == "Buildings_001_LR4"
+    assert len({sample["correlation_group"] for sample in samples}) == 180
     assert samples[0]["heatmap_path"] == str(
         (tmp_path / "heatmaps" / "Buildings_001_LR2_AIS.npy.gz").resolve()
     )
@@ -236,6 +243,7 @@ def regressor_samples(
                 "regressors": usage,
                 "sample_id": sample_id,
                 "test_case": str(index),
+                "correlation_group": str(index),
                 "score": index / max(count - 1, 1),
             }
         )
@@ -346,6 +354,7 @@ def test_feature_imputation_uses_training_statistics_only() -> None:
             "sample_id": ["train-a", "train-b", "validation-a", "validation-b"],
             "dataset": ["data"] * 4,
             "test_case": ["gt-a", "gt-b", "gt-c", "gt-d"],
+            "correlation_group": ["gt-a", "gt-b", "gt-c", "gt-d"],
             "score_type": ["mos"] * 4,
             "score": [0.1, 0.2, 0.3, 0.4],
             "feature_a": [1.0, 3.0, np.nan, np.inf],
@@ -372,6 +381,7 @@ def test_feature_imputation_rejects_feature_without_finite_training_value() -> N
             "sample_id": ["train-a", "train-b", "validation"],
             "dataset": ["data"] * 3,
             "test_case": ["gt-a", "gt-b", "gt-c"],
+            "correlation_group": ["gt-a", "gt-b", "gt-c"],
             "score_type": ["mos"] * 3,
             "score": [0.1, 0.2, 0.3],
             "feature": [np.nan, np.inf, 1.0],
@@ -445,13 +455,14 @@ def test_forward_selection_failure_does_not_block_backward_selection(
     assert saved["direction"].tolist() == ["backward"]
 
 
-def test_validation_correlations_pool_mos_and_average_bt_per_gt() -> None:
+def test_validation_correlations_pool_mos_and_average_bt_per_comparison_group() -> None:
     from qualisr.regressors import validation_correlations
 
     metadata = pd.DataFrame(
         {
             "dataset": ["mos-data"] * 4 + ["bt-data"] * 6,
-            "test_case": ["gt-a", "gt-a", "gt-b", "gt-b", "gt-1", "gt-1", "gt-1", "gt-2", "gt-2", "gt-2"],
+            "test_case": ["gt-a", "gt-a", "gt-b", "gt-b"] + ["shared-gt"] * 6,
+            "correlation_group": ["all"] * 4 + ["gt-1"] * 3 + ["gt-2"] * 3,
             "score_type": ["mos"] * 4 + ["bradley_terry"] * 6,
         }
     )
@@ -466,7 +477,7 @@ def test_validation_correlations_pool_mos_and_average_bt_per_gt() -> None:
     assert mos["n_groups"] == 1
     assert mos["plcc"] == 1.0
     assert mos["srcc"] == 1.0
-    assert bt["aggregation"] == "mean_per_gt"
+    assert bt["aggregation"] == "mean_per_comparison_group"
     assert bt["n_groups"] == 2
     assert np.isclose(bt["plcc"], 0.0)
     assert np.isclose(bt["srcc"], 0.0)
@@ -585,6 +596,7 @@ def test_regressor_run_saves_separate_per_dataset_validation_outputs(tmp_path: P
     for index, sample in enumerate(validation_b):
         sample["score_type"] = "bradley_terry"
         sample["test_case"] = f"gt-{index // 2}"
+        sample["correlation_group"] = f"gt-{index // 2}"
     samples += validation_b
     cfg = regressor_test_config()
     cfg.update(
@@ -638,7 +650,7 @@ def test_regressor_run_saves_separate_per_dataset_validation_outputs(tmp_path: P
         / "per_dataset"
         / "validation-b"
         / "correlations"
-        / "correlations_per_gt.csv"
+        / "correlations_per_comparison_group.csv"
     )
     assert len(bt_details) == 2
     assert set(bt_details["correlation_group"]) == {"gt-0", "gt-1"}

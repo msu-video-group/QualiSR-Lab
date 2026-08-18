@@ -38,6 +38,9 @@ QualiSR-Lab does not require custom datasets to copy the QualiSR-Set120 layout. 
     "lr_path": "/absolute/path/to/lr.png",
     "sr_path": "/absolute/path/to/sr.png",
     "score": 0.72,
+    # Required for Bradley-Terry scores: identifies one independently scored
+    # comparison set while test_case remains the source-image split group.
+    "correlation_group": "source-image-id_x4",
 }
 ```
 
@@ -135,8 +138,10 @@ is independent from the model-training `seed`. All samples with the same
 Datasets use `score_type: "mos"` by default. Built-in Bradley-Terry parsers,
 including RealSRQ, mark their samples as `bradley_terry` automatically. A
 custom dataset entry can set `score_type: "bradley_terry"` explicitly; its
-correlations are computed per `test_case` and averaged instead of pooling
-incompatible content scores.
+samples must then define `correlation_group`. Correlations are computed within
+each independently scored comparison group and averaged instead of pooling
+incompatible Bradley-Terry scores. `test_case` remains the source/GT identity
+used for leakage-safe dataset splitting.
 
 Multiple entries are combined in one run. Bundled names include
 `QualiSR-Set120`, `dsr-dataset`, `ISRGen-QA`, and `RealSRQ`.

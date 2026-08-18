@@ -3,6 +3,9 @@
 Each parser returns a list of dictionaries with at least:
   dataset, test_case, method, hr_path, lr_path, sr_path, score
 
+Parsers for Bradley-Terry datasets also return correlation_group, identifying
+the independently scored comparison group.
+
 When reference images exist in common reference folders, parser outputs also
 include bicubic_path, rlfn_path, span_path, and ref_paths.
 
@@ -972,6 +975,7 @@ def parse_test_dsr_bt_dataset(
                         "dataset": dataset_name,
                         "score_type": "bradley_terry",
                         "test_case": test_case,
+                        "correlation_group": test_case,
                         "method": method,
                         "rel_path": os.path.relpath(
                             sr_path,
@@ -1202,6 +1206,7 @@ def parse_realsrq(
                             "dataset": dataset_name,
                             "score_type": "bradley_terry",
                             "test_case": scene_name,
+                            "correlation_group": f"{scene_name}_LR{lr_scale}",
                             "method": f"{method}_x{lr_scale}",
                             "rel_path": os.path.relpath(sr_path, base_path).replace(os.sep, "/"),
                             "hr_path": _abs(hr_path),
@@ -1642,6 +1647,13 @@ def load_dataset(entry: Mapping[str, Any], base_dir: str | Path | None = None) -
             raise ValueError(
                 f"Dataset '{name}' parser returned unsupported score_type '{score_type}'"
             )
+        if score_type == "bradley_terry":
+            if not sample.get("correlation_group"):
+                raise ValueError(
+                    f"Bradley-Terry dataset '{name}' samples must define correlation_group"
+                )
+        else:
+            sample["correlation_group"] = str(sample["test_case"])
         sample["score_type"] = score_type
         sample["features_root"] = str(features_root)
         sample["regressors"] = dict(regressors)
