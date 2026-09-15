@@ -68,7 +68,7 @@ Unless an experiment explicitly varies a setting, configurations use:
 - grouping by source/GT identity for internal splits;
 - PCA dimension 5 and RLFN as the baseline FR reference;
 - all supported regression analyses and plots;
-- regressor profiling disabled.
+- regressor profiling enabled, saving train/predict runtime and estimated prediction FLOPs under each run's `profiling/` directory.
 
 Non-dataset feature, reference, and embedding experiments train on QualiSR-Set120 and dsr-dataset with grouped 20% internal validation splits. ISRGen-QA and RealSRQ are validation-only. The split uses `split_seed`, independently of the model `seed`, and all samples sharing one source/GT image remain on the same side.
 

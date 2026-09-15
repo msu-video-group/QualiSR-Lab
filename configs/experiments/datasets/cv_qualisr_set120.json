@@ -47,7 +47,7 @@
       "save_mean_correlations": true,
       "save_best_correlations": true,
       "profiling": {
-        "regressors": false,
+        "regressors": true,
         "feature_profile_files": [],
         "feature_profiles": {}
       },
