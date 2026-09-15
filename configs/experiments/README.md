@@ -1,6 +1,6 @@
 # Regression experiment suite
 
-This directory contains reproducible regression configurations for feature ablations, reference comparisons, embedding representations, dataset transfer, mixed-dataset training, and grouped cross-validation. Every configuration enables only the regressor stage and consumes precomputed feature files; it does not regenerate references, embeddings, PCA outputs, differences, or artifact statistics.
+This directory contains reproducible regression configurations for feature ablations, reference comparisons, embedding representations, feature combinations, dataset transfer, mixed-dataset training, and grouped cross-validation. Every configuration enables only the regressor stage and consumes precomputed feature files; it does not regenerate references, embeddings, PCA outputs, differences, or artifact statistics.
 
 ## Directory layout
 
@@ -9,6 +9,7 @@ configs/experiments/
 ├── features/        # Individual feature families and PCA dimensions
 ├── fr_references/   # FR-reference comparisons
 ├── embeddings/      # SR, pseudo-reference, and difference representations
+├── combinations/    # Mixed feature families and seeded noise controls
 ├── datasets/        # Cross-dataset, mixture, and grouped-CV experiments
 └── README.md
 ```
@@ -21,6 +22,7 @@ plots/
     ├── features/vgg_pca_005@pca5/
     ├── fr_references/fr_rlfn@pca5/
     ├── embeddings/embedding_difference@pca5/
+    ├── combinations/all_rr_features@pca5/
     └── datasets/cv_all@pca5/
 ```
 
@@ -33,7 +35,7 @@ The suite expects these datasets and their precomputed feature directories:
 - ISRGen-QA
 - RealSRQ, used only for external validation
 
-Before running the suite on another machine, update each dataset entry's `root` and `features_root` to the corresponding local paths. All participating datasets must expose compatible feature columns and complete `sample_id` coverage.
+Before running the suite on another machine, update each dataset entry's `root` and `features_root` to the corresponding local paths. All participating datasets must expose compatible feature columns and complete `sample_id` coverage. The two noise-control configurations additionally require `noise.csv` in every dataset's `features_root`, with `gaussian_0`–`gaussian_4` and `uniform_0`–`uniform_4` generated at seed 42. The regressor-only configurations do not create these files; generate them with the feature-extraction stage before running the noise controls.
 
 ## Running experiments
 
@@ -52,6 +54,9 @@ qualisr-run-regressors --config configs/experiments/features
 
 # Run the complete suite
 qualisr-run-pipeline --config configs/experiments
+
+# Run only the general feature-combination set
+qualisr-run-pipeline --config configs/experiments/combinations
 ```
 
 The batch stops at the first failing configuration. Common options such as `--no-plots` and `--plots-root` apply to every run. `--experiment-name` is rejected for multi-config batches because it would make outputs collide; the regressor command similarly rejects explicit shared profiling output files.
@@ -64,7 +69,7 @@ Unless an experiment explicitly varies a setting, configurations use:
 - median imputation fitted on training data only, before feature scaling;
 - `MinMaxScaler` fitted on training data only;
 - Random Forest, XGBoost, and CatBoost with baseline parameters;
-- Q-Align excluded from regressor inputs;
+- Q-Align excluded from regressor inputs except in the two broad feature-pool runs;
 - grouping by source/GT identity for internal splits;
 - PCA dimension 5 and RLFN as the baseline FR reference;
 - all supported regression analyses and plots;
@@ -90,6 +95,29 @@ Missing or infinite feature values are handled by the explicitly configured prep
 ```
 
 The imputer is fitted separately on each training split (and each cross-validation fold), then applied to its validation samples. A run fails explicitly if a feature has no finite training value from which to compute the configured statistic.
+
+## General feature combinations
+
+The ten configurations in `combinations/` all use the default grouped 20% validation splits from QualiSR-Set120 and dsr-dataset, with ISRGen-QA and RealSRQ entirely held out for validation. They keep the same models, seeds, scaling, imputation, correlation aggregation, and profiling settings. Feature inputs and corresponding diagnostics are the main differences.
+
+`all_rr_features.json` loads every feature family already mapped in this suite at PCA=5: all NR metrics (including Q-Align), FR metrics against bicubic/RLFN/SPAN pseudo-references, SigLIP outputs, SR and pseudo-reference VGG/ResNet embeddings, their differences, and all artifact-mask statistics. `all_supported_oracle.json` adds GT-based FR columns to that pool. It is a full-reference oracle comparison, not a reduced-reference candidate, and its correlations must be reported separately. Uncompressed high-dimensional embeddings are outside this suite's PCA-5 baseline. GT-based direct metric comparators may still appear in RR correlation reports but are not RR regressor inputs.
+
+| Config | Regressor inputs | Question |
+|---|---|---|
+| `all_rr_features.json` | All mapped reduced-reference feature families and all ten artifact statistics | How does the broad feature pool perform? |
+| `all_supported_oracle.json` | Broad feature pool plus GT-based FR metrics (oracle) | How does the full-reference oracle compare? |
+| `pruned_rr_features.json` | NR (without Q-Align), RLFN-FR, SR and difference embeddings, four artifact statistics | Does a fixed smaller pool compete with the broad one? |
+| `nr_fr_artifacts.json` | NR, RLFN-FR, four artifact statistics | Are scalar quality cues sufficient without embeddings? |
+| `fr_sr_artifacts.json` | RLFN-FR, SR VGG/ResNet PCA-5, four artifact statistics | Do FR and SR-representation cues complement each other without NR metrics? |
+| `nr_fr_reference_difference.json` | NR, RLFN-FR, pseudo-reference and difference embeddings, four artifact statistics | Can reference-relative representations replace raw SR embeddings? |
+| `nr_fr_siglip_artifacts.json` | NR, RLFN-FR, SigLIP outputs, four artifact statistics | Does SigLIP add value to compact scalar cues? |
+| `minimal_three_signals.json` | LPIPS-VGG+RLFN, VGG SR–reference difference component 0, artifact `area00`; no NR metrics | How far can one signal from each of three RR feature families go? |
+| `noise_only.json` | Five Gaussian and five uniform noise columns | What performance can an all-noise input pool appear to achieve? |
+| `noise_with_baseline.json` | Baseline NR, RLFN-FR, SR VGG/ResNet PCA-5, four artifact statistics, plus ten noise columns | Which real features exceed the validation-set noise floor? |
+
+The pruned set is fixed in advance, based on existing ablation hypotheses; it is not chosen from these validation results. The tree regressors use every input column configured for each run. Ridge forward/backward selection analyzes a predefined, cross-family candidate list (all columns for the minimal and noise-only sets), avoiding an accidental search over only the first 12 columns in wide runs. Selection and comparisons on these validation sets are exploratory; any newly chosen configuration needs an independent evaluation before being reported as a general best combination. The oracle run cannot be included in a reduced-reference ranking.
+
+For each model and validation dataset, `noise_with_baseline` saves `per_dataset/<dataset>/importances/noise_floor_<model>.csv`. Its `noise_floor` is the largest **absolute permutation importance** among the ten noise columns on that dataset's validation samples, using the regressors' default R² scoring. Compare it with `importance_<model>.csv` in the same directory: a real feature below this floor is no stronger than the strongest sampled null control in this run. The `noise_only` run is a check for apparent all-noise correlations, not a source of a transferable numeric threshold; native/combined importances and noise-only importances have different model baselines. Use the MOS datasets for interpreting the floor: RealSRQ's Bradley–Terry labels are comparable only within GT series, so its whole-dataset R² permutation floor is not a content-independent threshold. These floors are exploratory heuristics, not proof that a feature is useless or a universal significance cutoff.
 
 ## Experiment matrix
 
