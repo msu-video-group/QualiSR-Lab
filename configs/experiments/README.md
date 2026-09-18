@@ -1,6 +1,6 @@
 # Regression experiment suite
 
-This directory contains reproducible regression configurations for feature ablations, reference comparisons, embedding representations, feature combinations, dataset transfer, mixed-dataset training, and grouped cross-validation. Every configuration enables only the regressor stage and consumes precomputed feature files; it does not regenerate references, embeddings, PCA outputs, differences, or artifact statistics.
+This directory contains reproducible regression configurations for feature ablations, focused feature-impact studies, reference comparisons, embedding representations, feature combinations, dataset transfer, mixed-dataset training, and grouped cross-validation. Every configuration enables only the regressor stage and consumes precomputed feature files; it does not regenerate references, embeddings, PCA outputs, differences, or artifact statistics.
 
 ## Directory layout
 
@@ -10,6 +10,7 @@ configs/experiments/
 ├── fr_references/   # FR-reference comparisons
 ├── embeddings/      # SR, pseudo-reference, and difference representations
 ├── combinations/    # Mixed feature families and seeded noise controls
+├── feature_impact/  # Paired SigLIP and Q-Align impact studies
 ├── datasets/        # Cross-dataset, mixture, and grouped-CV experiments
 └── README.md
 ```
@@ -23,6 +24,7 @@ plots/
     ├── fr_references/fr_rlfn@pca5/
     ├── embeddings/embedding_difference@pca5/
     ├── combinations/all_rr_features@pca5/
+    ├── feature_impact/qalign_with_baseline@pca5/
     └── datasets/cv_all@pca5/
 ```
 
@@ -57,6 +59,9 @@ qualisr-run-pipeline --config configs/experiments
 
 # Run only the general feature-combination set
 qualisr-run-pipeline --config configs/experiments/combinations
+
+# Run the focused SigLIP and Q-Align impact study
+qualisr-run-pipeline --config configs/experiments/feature_impact
 ```
 
 The batch stops at the first failing configuration. Common options such as `--no-plots` and `--plots-root` apply to every run. `--experiment-name` is rejected for multi-config batches because it would make outputs collide; the regressor command similarly rejects explicit shared profiling output files.
@@ -69,7 +74,7 @@ Unless an experiment explicitly varies a setting, configurations use:
 - median imputation fitted on training data only, before feature scaling;
 - `MinMaxScaler` fitted on training data only;
 - Random Forest, XGBoost, and CatBoost with baseline parameters;
-- Q-Align excluded from regressor inputs except in the two broad feature-pool runs;
+- Q-Align excluded from regressor inputs except in the broad-pool and dedicated Q-Align impact runs;
 - grouping by source/GT identity for internal splits;
 - PCA dimension 5 and RLFN as the baseline FR reference;
 - all supported regression analyses and plots;
@@ -95,6 +100,20 @@ Missing or infinite feature values are handled by the explicitly configured prep
 ```
 
 The imputer is fitted separately on each training split (and each cross-validation fold), then applied to its validation samples. A run fails explicitly if a feature has no finite training value from which to compute the configured statistic.
+
+## Focused SigLIP and Q-Align impact
+
+The five configurations in `feature_impact/` share one control: NR metrics without Q-Align, RLFN-based FR metrics, VGG/ResNet PCA-5 features, and the compact artifact-statistic set `{max, median, std, area00}`. All five use the common grouped training and validation protocol, models, seeds, analyses, plots, and profiling settings.
+
+| Config | Regressor inputs | Purpose |
+|---|---|---|
+| `baseline.json` | Shared compact-statistics baseline | Provide the matched control for both additions. |
+| `siglip_only.json` | SigLIP content fidelity, perceptual enhancement, and final RR score | Measure SigLIP as an individual feature family. |
+| `siglip_with_baseline.json` | Shared baseline plus all three SigLIP outputs | Measure the incremental effect of adding SigLIP. |
+| `qalign_only.json` | Q-Align only | Measure the standalone Q-Align signal. |
+| `qalign_with_baseline.json` | Shared baseline plus Q-Align | Measure the incremental effect of Q-Align and expose its importance relative to a heterogeneous feature pool. |
+
+The Q-Align runs explicitly include Q-Align in metric comparisons and feature-selection candidates. More importantly, `qalign_with_baseline.json` keeps feature-importance, combined-importance, and SHAP outputs enabled. Inspect `per_dataset/<dataset>/importances/importance_<model>.csv` and the corresponding plots for validation-set permutation importance; root-level importance plots use the models' native importance when available. These outputs are intended to reproduce and diagnose the previously observed dominance of Q-Align, which is why Q-Align remains excluded from most other experiments. Treat dominance as an experimental result to verify per model and validation dataset, rather than assuming that it must hold universally.
 
 ## General feature combinations
 
@@ -123,6 +142,11 @@ For each model and validation dataset, `noise_with_baseline` saves `per_dataset/
 
 | Config | Training datasets | Validation datasets | Features / representation | Varied parameter or held-out group | Purpose |
 |---|---|---|---|---|---|
+| `feature_impact/baseline.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | NR without Q-Align + RLFN-FR + VGG/ResNet PCA-5 + compact artifact statistics | Shared control | Provide a matched baseline for the SigLIP and Q-Align additions. |
+| `feature_impact/siglip_only.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | SigLIP outputs only | Family=SigLIP | Evaluate SigLIP as a standalone family. |
+| `feature_impact/siglip_with_baseline.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | Shared control + SigLIP outputs | Addition=SigLIP | Measure the incremental effect of SigLIP. |
+| `feature_impact/qalign_only.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | Q-Align only | Feature=Q-Align | Evaluate Q-Align as a standalone feature. |
+| `feature_impact/qalign_with_baseline.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | Shared control + Q-Align | Addition=Q-Align | Measure Q-Align's incremental effect and validation-set feature-importance dominance. |
 | `features/vgg_pca_005.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | VGG SR embeddings only | PCA=5 | Measure the VGG PCA dimensionality effect. |
 | `features/vgg_pca_010.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | VGG SR embeddings only | PCA=10 | Measure the VGG PCA dimensionality effect. |
 | `features/vgg_pca_025.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | VGG SR embeddings only | PCA=25 | Measure the VGG PCA dimensionality effect. |

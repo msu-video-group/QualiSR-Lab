@@ -964,6 +964,8 @@ def feature_family(feature_name: str, cfg: dict[str, Any] | None = None) -> str:
         return "SigLIP"
     if feature in {"min", "max", "mean", "median", "std", "p05", "p95", "area00", "area05", "area075"}:
         return "Stats"
+    if re.fullmatch(r"(gaussian|uniform)_\d+", feature):
+        return "Noise"
     return "Other"
 
 
@@ -976,6 +978,7 @@ def importance_palette() -> dict[str, str]:
         "ResNet": "#0e4a95",
         "SigLIP": "#5255ea",
         "Stats": "#5bea52",
+        "Noise": "#777777",
         "Other": "#000000",
     }
 
@@ -989,6 +992,7 @@ def importance_legend_labels(cfg: dict[str, Any] | None = None) -> dict[str, str
         "ResNet": "ResNet features",
         "SigLIP": "SigLIP features",
         "Stats": "Artifact statistics",
+        "Noise": "Noise controls",
         "Other": "Other",
     }
     pretty_cfg = cfg.get("pretty_names", {}) if cfg else {}
@@ -1242,6 +1246,20 @@ def plot_importance(
         }
     )
     importance_table.to_csv(out_dir / f"importance_{model_name}.csv", index=False)
+    if use_permutation_values:
+        noise_rows = importance_table[
+            importance_table["feature"].str.match(r"^(gaussian|uniform)_\d+$")
+        ]
+        if not noise_rows.empty:
+            pd.DataFrame(
+                [
+                    {
+                        "model": model_name,
+                        "noise_floor": float(noise_rows["importance"].max()),
+                        "n_noise_features": len(noise_rows),
+                    }
+                ]
+            ).to_csv(out_dir / f"noise_floor_{model_name}.csv", index=False)
 
     palette = importance_palette()
     colors = [palette[feature_family(name, cfg)] for name in importances.index]
