@@ -11,6 +11,7 @@ configs/experiments/
 ├── embeddings/      # SR, pseudo-reference, and difference representations
 ├── combinations/    # Mixed feature families and seeded noise controls
 ├── feature_impact/  # Paired SigLIP and Q-Align impact studies
+├── reference_transfer/ # Standalone FR-reference and single-dataset transfer runs
 ├── datasets/        # Cross-dataset, mixture, and grouped-CV experiments
 └── README.md
 ```
@@ -25,6 +26,7 @@ plots/
     ├── embeddings/embedding_difference@pca5/
     ├── combinations/all_rr_features@pca5/
     ├── feature_impact/qalign_with_baseline@pca5/
+    ├── reference_transfer/fr_all_pseudo_references@pca5/
     └── datasets/cv_all@pca5/
 ```
 
@@ -62,6 +64,9 @@ qualisr-run-pipeline --config configs/experiments/combinations
 
 # Run the focused SigLIP and Q-Align impact study
 qualisr-run-pipeline --config configs/experiments/feature_impact
+
+# Run the standalone-reference and single-dataset transfer study
+qualisr-run-pipeline --config configs/experiments/reference_transfer
 ```
 
 The batch stops at the first failing configuration. Common options such as `--no-plots` and `--plots-root` apply to every run. `--experiment-name` is rejected for multi-config batches because it would make outputs collide; the regressor command similarly rejects explicit shared profiling output files.
@@ -115,6 +120,25 @@ The five configurations in `feature_impact/` share one control: NR metrics witho
 
 The Q-Align runs explicitly include Q-Align in metric comparisons and feature-selection candidates. More importantly, `qalign_with_baseline.json` keeps feature-importance, combined-importance, and SHAP outputs enabled. Inspect `per_dataset/<dataset>/importances/importance_<model>.csv` and the corresponding plots for validation-set permutation importance; root-level importance plots use the models' native importance when available. These outputs are intended to reproduce and diagnose the previously observed dominance of Q-Align, which is why Q-Align remains excluded from most other experiments. Treat dominance as an experimental result to verify per model and validation dataset, rather than assuming that it must hold universally.
 
+## Standalone references and single-dataset transfer
+
+The seven configurations in `reference_transfer/` cover two related evaluation groups. The four FR-only runs use the default grouped training on QualiSR-Set120 and dsr-dataset, their 20% validation splits, and external validation on ISRGen-QA and RealSRQ. The existing RLFN-only counterpart remains `features/fr.json`.
+
+| Config | Regressor inputs | Purpose |
+|---|---|---|
+| `fr_bicubic.json` | Six FR metrics computed against bicubic pseudo-references | Evaluate bicubic-based FR metrics as a standalone family. |
+| `fr_span.json` | Six FR metrics computed against SPAN pseudo-references | Evaluate SPAN-based FR metrics as a standalone family. |
+| `fr_gt_oracle.json` | Six FR metrics computed against true GT images | Provide a full-reference oracle; do not rank it as a reduced-reference method. |
+| `fr_all_pseudo_references.json` | FR metrics for RLFN, SPAN, and bicubic together | Test whether the three pseudo-reference views complement one another in one model. |
+
+The three transfer runs copy the existing `datasets/train_*.json` protocol: train on one complete MOS dataset with no internal split, validate on the other two MOS datasets, and use the baseline NR (without Q-Align), RLFN-FR, VGG PCA-5, and ResNet PCA-5 features. They additionally validate on RealSRQ. RealSRQ remains validation-only, and its Bradley–Terry correlations are computed within each GT series before averaging.
+
+| Config | Training dataset | Validation datasets |
+|---|---|---|
+| `train_qualisr_set120_with_realsrq.json` | QualiSR-Set120 | dsr-dataset, ISRGen-QA, RealSRQ |
+| `train_dsr_dataset_with_realsrq.json` | dsr-dataset | QualiSR-Set120, ISRGen-QA, RealSRQ |
+| `train_isrgen_qa_with_realsrq.json` | ISRGen-QA | QualiSR-Set120, dsr-dataset, RealSRQ |
+
 ## General feature combinations
 
 The ten configurations in `combinations/` all use the default grouped 20% validation splits from QualiSR-Set120 and dsr-dataset, with ISRGen-QA and RealSRQ entirely held out for validation. They keep the same models, seeds, scaling, imputation, correlation aggregation, and profiling settings. Feature inputs and corresponding diagnostics are the main differences.
@@ -142,6 +166,13 @@ For each model and validation dataset, `noise_with_baseline` saves `per_dataset/
 
 | Config | Training datasets | Validation datasets | Features / representation | Varied parameter or held-out group | Purpose |
 |---|---|---|---|---|---|
+| `reference_transfer/fr_bicubic.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | Bicubic-reference FR metrics only | Reference=bicubic | Evaluate bicubic-based FR metrics as a standalone family. |
+| `reference_transfer/fr_span.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | SPAN-reference FR metrics only | Reference=SPAN | Evaluate SPAN-based FR metrics as a standalone family. |
+| `reference_transfer/fr_gt_oracle.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | GT-reference FR metrics only | Reference=GT oracle | Evaluate the full-reference upper-bound family separately from RR runs. |
+| `reference_transfer/fr_all_pseudo_references.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | RLFN-, SPAN-, and bicubic-reference FR metrics | References=all pseudo-references | Evaluate all pseudo-reference variations jointly. |
+| `reference_transfer/train_qualisr_set120_with_realsrq.json` | QualiSR-Set120 | dsr-dataset; ISRGen-QA; RealSRQ | Full baseline: NR + RLFN-FR + VGG PCA-5 + ResNet PCA-5 | Single training dataset | Repeat single-dataset transfer with RealSRQ validation. |
+| `reference_transfer/train_dsr_dataset_with_realsrq.json` | dsr-dataset | QualiSR-Set120; ISRGen-QA; RealSRQ | Full baseline: NR + RLFN-FR + VGG PCA-5 + ResNet PCA-5 | Single training dataset | Repeat single-dataset transfer with RealSRQ validation. |
+| `reference_transfer/train_isrgen_qa_with_realsrq.json` | ISRGen-QA | QualiSR-Set120; dsr-dataset; RealSRQ | Full baseline: NR + RLFN-FR + VGG PCA-5 + ResNet PCA-5 | Single training dataset | Repeat single-dataset transfer with RealSRQ validation. |
 | `feature_impact/baseline.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | NR without Q-Align + RLFN-FR + VGG/ResNet PCA-5 + compact artifact statistics | Shared control | Provide a matched baseline for the SigLIP and Q-Align additions. |
 | `feature_impact/siglip_only.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | SigLIP outputs only | Family=SigLIP | Evaluate SigLIP as a standalone family. |
 | `feature_impact/siglip_with_baseline.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | Shared control + SigLIP outputs | Addition=SigLIP | Measure the incremental effect of SigLIP. |
