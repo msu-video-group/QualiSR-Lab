@@ -12,6 +12,7 @@ configs/experiments/
 ├── combinations/    # Mixed feature families and seeded noise controls
 ├── feature_impact/  # Paired SigLIP and Q-Align impact studies
 ├── reference_transfer/ # Standalone FR-reference and single-dataset transfer runs
+├── nr_combinations/ # NR paired with complementary reduced-reference families
 ├── datasets/        # Cross-dataset, mixture, and grouped-CV experiments
 └── README.md
 ```
@@ -27,6 +28,7 @@ plots/
     ├── combinations/all_rr_features@pca5/
     ├── feature_impact/qalign_with_baseline@pca5/
     ├── reference_transfer/fr_all_pseudo_references@pca5/
+    ├── nr_combinations/nr_all_complementary_features@pca5/
     └── datasets/cv_all@pca5/
 ```
 
@@ -67,6 +69,9 @@ qualisr-run-pipeline --config configs/experiments/feature_impact
 
 # Run the standalone-reference and single-dataset transfer study
 qualisr-run-pipeline --config configs/experiments/reference_transfer
+
+# Run the NR-centered complementary-family study
+qualisr-run-pipeline --config configs/experiments/nr_combinations
 ```
 
 The batch stops at the first failing configuration. Common options such as `--no-plots` and `--plots-root` apply to every run. `--experiment-name` is rejected for multi-config batches because it would make outputs collide; the regressor command similarly rejects explicit shared profiling output files.
@@ -139,6 +144,20 @@ The three transfer runs copy the existing `datasets/train_*.json` protocol: trai
 | `train_dsr_dataset_with_realsrq.json` | dsr-dataset | QualiSR-Set120, ISRGen-QA, RealSRQ |
 | `train_isrgen_qa_with_realsrq.json` | ISRGen-QA | QualiSR-Set120, dsr-dataset, RealSRQ |
 
+## NR-centered complementary families
+
+The five configurations in `nr_combinations/` isolate what each reduced-reference family contributes when paired with the four principal NR metrics (MUSIQ, ARNIQA, UNIQUE, and PaQ-2-PiQ). Q-Align remains excluded. All runs use the common grouped training and validation protocol and PCA dimension 5. Artifact statistics use the compact `{max, median, std, area00}` set. FR metrics use RLFN, while the precomputed pseudo-GT embeddings and SR–reference differences use the pipeline's baseline bicubic pseudo-reference.
+
+| Config | Regressor inputs | Purpose |
+|---|---|---|
+| `nr_rlfn_fr.json` | NR + six RLFN-based FR metrics | Measure the complementarity of scalar NR and pseudo-reference FR cues. |
+| `nr_artifact_statistics.json` | NR + four artifact statistics | Measure the contribution of compact spatial-artifact summaries. |
+| `nr_pseudo_gt_embeddings.json` | NR + bicubic pseudo-GT VGG/ResNet PCA-5 embeddings | Measure whether reference representations complement NR metrics. |
+| `nr_embedding_differences.json` | NR + VGG/ResNet PCA-5 SR–reference differences | Measure whether representation differences complement NR metrics. |
+| `nr_all_complementary_features.json` | NR + RLFN-FR + pseudo-GT embeddings + embedding differences + four artifact statistics | Evaluate all four complementary families together without raw SR embeddings. |
+
+The tree regressors consume every configured input column. Forward/backward Ridge selection uses all scalar candidates in the two scalar runs and a prespecified cross-family candidate pool in the embedding runs, keeping the exploratory selection report tractable without changing the fitted tree-regressor inputs.
+
 ## General feature combinations
 
 The ten configurations in `combinations/` all use the default grouped 20% validation splits from QualiSR-Set120 and dsr-dataset, with ISRGen-QA and RealSRQ entirely held out for validation. They keep the same models, seeds, scaling, imputation, correlation aggregation, and profiling settings. Feature inputs and corresponding diagnostics are the main differences.
@@ -166,6 +185,11 @@ For each model and validation dataset, `noise_with_baseline` saves `per_dataset/
 
 | Config | Training datasets | Validation datasets | Features / representation | Varied parameter or held-out group | Purpose |
 |---|---|---|---|---|---|
+| `nr_combinations/nr_rlfn_fr.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | NR + RLFN-based FR metrics | Addition=FR | Measure scalar NR/FR complementarity. |
+| `nr_combinations/nr_artifact_statistics.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | NR + max, median, std, area00 | Addition=artifact statistics | Measure compact artifact-statistic complementarity. |
+| `nr_combinations/nr_pseudo_gt_embeddings.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | NR + pseudo-GT VGG/ResNet PCA-5 embeddings | Addition=reference embeddings | Measure pseudo-GT representation complementarity. |
+| `nr_combinations/nr_embedding_differences.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | NR + VGG/ResNet PCA-5 embedding differences | Addition=embedding differences | Measure SR–reference difference complementarity. |
+| `nr_combinations/nr_all_complementary_features.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | NR + RLFN-FR + pseudo-GT embeddings + differences + compact artifact statistics | Addition=all four families | Evaluate all requested complementary families jointly. |
 | `reference_transfer/fr_bicubic.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | Bicubic-reference FR metrics only | Reference=bicubic | Evaluate bicubic-based FR metrics as a standalone family. |
 | `reference_transfer/fr_span.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | SPAN-reference FR metrics only | Reference=SPAN | Evaluate SPAN-based FR metrics as a standalone family. |
 | `reference_transfer/fr_gt_oracle.json` | QualiSR-Set120; dsr-dataset | Grouped 20% from QualiSR-Set120 and dsr-dataset; ISRGen-QA; RealSRQ | GT-reference FR metrics only | Reference=GT oracle | Evaluate the full-reference upper-bound family separately from RR runs. |
