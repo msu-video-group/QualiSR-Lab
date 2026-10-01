@@ -168,7 +168,7 @@
         "enabled": true,
         "common": {
             "n_components": [
-                5, 10, 25, 50, 75, 100
+                5, 10, 25, 50, 75
             ],
             "output_dir": "{features_root}/pca",
             "disable_auto_split": false,

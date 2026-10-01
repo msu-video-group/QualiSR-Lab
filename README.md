@@ -5,7 +5,7 @@
 
 # QualiSR-Lab: Reduced-Reference IQA for SR
 
-[Oleg Ryabinin](https://orcid.org/0009-0008-3153-4183)<sup>1,2</sup> | [Evgeney Bogatyrev](https://orcid.org/0000-0002-6173-3561)<sup>1,2,3</sup> | [Abud Khaled](https://orcid.org/0009-0009-7131-5839)<sup>1,2,3</sup> | [Dmitriy Vatolin](https://orcid.org/0000-0002-8893-9340)<sup>1,2,3</sup>
+[Oleg Ryabinin](https://orcid.org/0009-0008-3153-4183)<sup>1,2</sup> | [Evgeney Bogatyrev](https://orcid.org/0000-0002-6173-3561)<sup>1,2,3</sup> | [Khaled Abud](https://orcid.org/0009-0009-7131-5839)<sup>1,2,3</sup> | [Dmitriy Vatolin](https://orcid.org/0000-0002-8893-9340)<sup>1,2,3</sup>
 
 <sup>1</sup>Lomonosov Moscow State University, 119991, Moscow, Russia
 
@@ -13,7 +13,9 @@
 
 <sup>3</sup>MSU Institute for Artificial Intelligence, Lomonosov Moscow State University
 
-## 🔎 Overview
+---
+
+## Overview
 
 This project studies which features extracted from Low-Resolution (LR) and Super-Resolution (SR) images are most informative for Image Quality Assessment (IQA). Its purpose is to assist researchers in studying the best features for their upscaled image quality metrics by providing a pipeline to extract the features and build a comprehensive graphical summary on their contribution to IQA and correlation of the resulting metric with human scores.
 
@@ -31,70 +33,40 @@ The proposed pipeline is:
 The sections below describe the required data format and the workflow.
 
 ![Pipeline overview](pipeline.png)
+
 ---
 
-## 🐌 Quickstart With Bundled Sample Data
+## Installation and quickstart
 
-The fastest smoke test uses the small score/feature CSV sample bundled inside
-the Python package, so it works after pip installation without downloading the
-full dataset.
+Python 3.10 or later is required. From the repository root:
 
 ```bash
 python -m pip install -e ".[regressors]"
 qualisr-run-regressors
 ```
 
-From a cloned repository, you can also run against the editable root
-`configs/`, `dataset/`, and `features/` files explicitly:
+This runs Random Forest, XGBoost, and CatBoost on the packaged labels and precomputed features for 120 SR images. No image download is needed. Results and plots are written to `plots/baseline@pca5/`; add `--no-plots` to skip plotting.
 
-```bash
-qualisr-run-regressors --config configs/pipeline.json
-```
-
-Downloading QualiSR-Set120 is optional for this regressor smoke test and is
-only needed to reproduce feature extraction or the full unified pipeline.
-
-Or build Docker image:
-
-```bash
-docker build -t qualisr-lab .
-docker run --rm qualisr-lab
-```
-
-You can run any of the following commands inside the Docker container:
-
-```bash
-docker run --rm -it --mount type=bind,source="${PWD}",target=/workspace qualisr-lab bash
-qualisr --help
-qualisr-run-regressors
-
-```
-
-The image installs the package under `/app`. The optional bind mount above makes
-your local checkout available at `/workspace` without replacing the installed
-package inside the image.
-
----
-
-## 🛠️ Installation Options
-
-For the regression pipeline only:
-
-```bash
-python -m pip install -e ".[regressors]"
-```
-
-For full feature extraction on CPU:
+For image feature extraction, install the additional dependencies:
 
 ```bash
 python -m pip install -e ".[features,regressors]"
 ```
 
-Also available on PyPI:
+The [PyPI package](https://pypi.org/project/qualisr-lab/) is also available:
 
 ```bash
 python -m pip install "qualisr-lab[features,regressors]"
 ```
+
+The Docker image includes regression dependencies and runs the bundled example without plots:
+
+```bash
+docker build -t qualisr-lab .
+docker run --rm --mount type=bind,source="${PWD}/plots",target=/app/plots qualisr-lab
+```
+
+Create the local `plots/` directory first if needed. The mount preserves results after the container exits. For an interactive shell, append `bash` and add `-it` to `docker run`.
 
 The legacy fully pinned environment is kept in `requirements.txt`.
 
@@ -102,10 +74,37 @@ See [dataset/readme.md](dataset/readme.md) for dataset download notes and the pa
 
 ---
 
-## 🧩 Python API
+## Run with image datasets
 
-The CLI remains the recommended way to run full experiments, but installed
-packages also expose a small stable API:
+Download [QualiSR-Set120](dataset/readme.md#download), then run commands from the repository root. The unified runner loads the configured datasets once and uses consistent sample IDs across feature extraction, artifact statistics, and regression.
+
+Before running the full pipeline, edit [`configs/pipeline.json`](configs/pipeline.json):
+
+- Set each dataset's `root` and `features_root`.
+- Select the feature groups and metrics needed for the experiment. Reference embeddings, generic timm embeddings, and embedding differences are disabled by default.
+
+```bash
+qualisr-run-pipeline --config configs/pipeline.json
+```
+
+The runner does not download datasets or generate artifact masks. It writes feature CSVs under `features/`, PCA outputs under `features/pca/`, and regression outputs under `plots/` with the default paths. The default regressor inputs are NR metrics without Q-Align, RLFN-based FR metrics, and VGG/ResNet PCA-5 features.
+
+Run individual stages with the same configuration:
+
+```bash
+qualisr-run-pipeline --config configs/pipeline.json --only-section references
+qualisr-run-pipeline --config configs/pipeline.json --only-section features
+qualisr-run-pipeline --config configs/pipeline.json --only-section pca statistics
+qualisr-run-regressors --config configs/pipeline.json
+```
+
+An explicit dataset configuration requires the LR/SR image files. Omit `--config` for the image-free bundled example. For custom parsers, dataset roles, and path rules, see the [dataset guide](dataset/readme.md). For ablations, transfer studies, and grouped cross-validation, see the [experiment suite](configs/experiments/README.md).
+
+---
+
+## Python API
+
+Run the bundled experiment without plots:
 
 ```python
 from qualisr import run_regressor_experiment
@@ -114,26 +113,21 @@ result = run_regressor_experiment(make_plots=False)
 print(result["results"])
 ```
 
-For the unified pipeline:
+Run the regression stage of a configured image dataset:
 
 ```python
-from qualisr import PipelineOptions, load_datasets, load_pipeline_config, run_pipeline
+from qualisr import run_pipeline
 
-cfg = load_pipeline_config()
-samples = load_datasets(cfg["datasets"])
 run_pipeline(
-    cfg,
-    samples=samples,
-    options=PipelineOptions(only_section=["regressors"], no_plots=True),
+    config_path="configs/pipeline.json",
+    only_section=["regressors"],
+    no_plots=True,
 )
 ```
 
-Implementation modules such as `qualisr.regressors`, `qualisr.features`, and
-`qualisr.pipeline` remain importable for advanced use.
-
 ---
 
-## ♻️ Full Reproducibility Run
+## Full Reproducibility Run
 
 To download the dataset and run feature extraction, PCA, artifact statistics, and regressor analysis end to end:
 
@@ -152,7 +146,7 @@ The script writes feature-group CSVs such as `features/fr.csv`, `features/nr.csv
 
 ---
 
-## 🚀 Workflow
+## Workflow
 
 You may either launch the whole pipeline in a single command with your JSON config as in the previous section or do each step separately. The unified pipeline parses the configured `datasets` entries into one shared sample list; datasets may use a bundled parser, a parser function from a user Python file, or explicit labels/image directories. Multiple entries are combined in one run. See [dataset/readme.md](dataset/readme.md) for the complete contract.
 
@@ -219,10 +213,6 @@ In the unified pipeline, configure the reference once as
 `features.common.embedding_reference`. All enabled reference-embedding groups
 use that same reference.
 
-Add `--profile` to save `<output_stem>_profile.csv` with mean runtime per feature. Add `--profile-flops` to also estimate PyTorch model FLOPs for features such as VGG, ResNet, SigLIP, and PyIQA metrics; this implies profiling and reruns model calls, so it is slower.
-
----
-
 ### Step 2: Apply PCA to high-dimensional features
 
 Apply Principal Component Analysis (PCA) to high-dimensional feature blocks such as `vgg_*` and `resnet_*` in CSV files produced in Step 1.
@@ -253,8 +243,6 @@ qualisr-apply-pca \
   --reference-output-template ref_vgg_shared_pca{n}.csv
 ```
 
----
-
 ### Step 3 (optional): Compute embedding differences
 
 Compute signed, element-wise `SR - reference` differences. Rows are matched by
@@ -271,8 +259,6 @@ qualisr-embedding-difference \
 The same command can operate on raw embeddings, for example with
 `--blocks vgg_diff=ref_vgg_,vgg_`.
 
----
-
 ### Step 4: Compute artifact-mask statistics
 
 Compute summary statistics for heatmaps stored as `.npy`, `.npy.gz`, or compatible compressed files.  
@@ -286,10 +272,6 @@ qualisr-compute-stats \
   --area-thresholds 0 0.5 0.75
 ```
 
-Add `--profile` to save `<output_stem>_profile.csv` with mean runtime and simple operation-count estimates for artifact statistics.
-
----
-
 ### Step 5: Fit regressors and analyze results
 
 Train regressors and produce summary on feature importances and correlations. The correlation plot can also include direct NR/FR metric baselines from feature CSV files.
@@ -302,9 +284,7 @@ Training and validation datasets, their split behavior, and their feature
 roots are declared once in the top-level `datasets` list. See
 [dataset/readme.md](dataset/readme.md#selecting-datasets).
 
-Add `--profile` to save `regressor_profile.csv` with train/predict runtime and estimated prediction FLOPs for tree regressors. If feature profile CSVs are available, pass them with `--feature-profile-files` or configure `profiling.feature_profile_files`; the pipeline also saves `regressor_total_profile.csv` with summed feature + regressor runtime/FLOPs.
-
-You can also use `regressors.ipynb` notebook for experiments. It trains regressors, evaluates them, and visualizes:
+You can also use [regressors.ipynb](regressors.ipynb) notebook for experimentsn; install `.[regressors,notebook]` to use it. It trains regressors, evaluates them, and visualizes:
 
 - feature importances,
 - PLCC/SRCC correlations,
@@ -319,9 +299,15 @@ Example outputs:
 ![Feature importances](plots/example@pca5/importances/all_models_importances.png)
 ![Correlations](plots/example@pca5/correlations/correlations.png)
 
+### Profiling
+
+Add `--profile` to standalone feature extraction or statistics to write `<output_stem>_profile.csv`. Feature extraction also accepts `--profile-flops`, which reruns supported PyTorch model calls and implies profiling. FLOP values are estimates and may omit unsupported operations.
+
+For regression, `--profile` writes runtime and prediction-cost estimates under the run's `profiling/` directory. Supply `--feature-profile-files` (or `profiling.feature_profile_files` in the regressor config) for combined feature and regressor estimates. Unified feature/statistics profiling is configured in the corresponding JSON sections.
+
 ---
 
-## 🔬 Feature Types
+## Feature Types
 
 This section summarizes the feature groups used in the pipeline. For references and guidelines to adding custom features, address [features/readme.md](features/readme.md).
 
@@ -329,7 +315,7 @@ This section summarizes the feature groups used in the pipeline. For references 
 
 NR metrics are widely used in SR-IQA because they do not require a perfect high-resolution reference image. Their main limitation is that they ignore information available in the input LR image, which may cause them to miss or even reward artifacts introduced by SR models.
 
-Recommended NR metrics in this project, based on results from the [SR Metrics Benchmark](https://videoprocessing.ai/benchmarks/super-resolution-metrics.html):
+Recommended NR metrics in this project, based on results from [VSRQAD](https://ieeexplore.ieee.org/document/11458719):
 
 - [Q-Align](https://github.com/Q-Future/Q-Align)
 - [MUSIQ](https://github.com/anse3832/MUSIQ)
@@ -353,7 +339,7 @@ Reference upscaling methods used here:
 - [SPAN](https://github.com/zononhzy/SPAN)
 - [RLFN](https://github.com/bytedance/RLFN)
 
-Recommended FR metrics in this project, based on results from the [SR Metrics Benchmark](https://videoprocessing.ai/benchmarks/super-resolution-metrics.html):
+Recommended FR metrics in this project, based on results from [VSRQAD](https://ieeexplore.ieee.org/document/11458719):
 
 - [LPIPS-VGG](https://github.com/richzhang/perceptualsimilarity)
 - [STLPIPS-VGG](https://github.com/abhijay9/ShiftTolerant-LPIPS)
@@ -388,7 +374,7 @@ Artifacts are common in modern deep-learning-based SR models. The working hypoth
 > Artifact-related information provides useful signals for assessing generated image quality.
 
 An artifact mask is a single-channel tensor with values in the range `[0, 1]`.  
-Masks for SR images must be computed beforehand with a suitable method such as [Prominence-Aware Artifact Detection metric](https://arxiv.org/abs/2510.16752).
+Masks for SR images must be computed beforehand with a suitable method such as [Prominence-Aware Artifact Detector](https://arxiv.org/abs/2510.16752).
 
 The project extracts the following summary statistics from artifact masks:
 
@@ -400,5 +386,6 @@ The project extracts the following summary statistics from artifact masks:
 - percentiles
 - thresholded artifact area
 
-## 🎫 License
-This project is released under the [BSD-3-Clause license](LICENSE).
+## License
+
+Project code is released under the [BSD-3-Clause license](LICENSE). Third-party code, checkpoints, and datasets have separate terms; see [third-party notices](THIRD_PARTY_NOTICES.md) and the [dataset guide](dataset/readme.md#license).
