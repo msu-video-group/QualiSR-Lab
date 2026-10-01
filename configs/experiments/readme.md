@@ -187,7 +187,7 @@ The `datasets/` configurations use the baseline NR (without Q-Align), RLFN-FR, a
 
 ## PCA and cross-validation
 
-PCA is precomputed: neither the regression runner nor its cross-validation loop refits PCA. The unified PCA stage also processes datasets separately. For an inductive evaluation, fit PCA only on the training partition and apply that same basis to held-out and external data. Reusing CSVs fitted on validation images, or fitting a different basis for each dataset, does not meet that protocol. Fold-specific PCA preparation and orchestration are required for a complete PCA-plus-regressor cross-validation experiment.
+PCA is precomputed: neither the regression runner nor its cross-validation loop refits PCA. The unified PCA stage also processes datasets separately. For an inductive evaluation, fit PCA only on the training partition and apply that same basis to held-out and external data.
 
 Cross-validation is controlled by `regressors.config.cross_validation` and is disabled by default:
 
