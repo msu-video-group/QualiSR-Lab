@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 from PIL import Image
 
 from qualisr.datasets import load_dataset, load_datasets
@@ -52,6 +53,8 @@ def test_qualisr_samples_have_stable_ids_and_default_heatmaps(tmp_path: Path) ->
 
     assert [sample["score"] for sample in samples] == [0.0, 1.0]
     assert samples[0]["sample_id"] == "QualiSR-Set120/PASD/0001.npy.gz"
+    assert samples[0]["score_type"] == "mos"
+    assert samples[0]["correlation_group"] == "0001"
     assert samples[0]["heatmap_path"] == str(root / "heatmaps" / "PASD" / "0001.npy.gz")
     assert Path(samples[0]["sr_path"]).is_absolute()
 
@@ -144,6 +147,28 @@ def test_directory_dataset_uses_explicit_directories(tmp_path: Path) -> None:
     assert samples[0]["heatmap_path"] == str((heatmap_dir / "case.npy.gz").resolve())
 
 
+def test_realsrq_heatmaps_use_flat_heatmaps_directory(tmp_path: Path, monkeypatch) -> None:
+    import scipy.io
+
+    from qualisr.datasets import parse_realsrq
+
+    scores = np.arange(60 * 27, dtype=float).reshape(60, 27)
+    monkeypatch.setattr(scipy.io, "loadmat", lambda _: {"score_matrix": scores})
+
+    samples = parse_realsrq(str(tmp_path), include_refs=False)
+
+    assert {sample["score_type"] for sample in samples} == {"bradley_terry"}
+    assert samples[0]["test_case"] == "Buildings_001"
+    assert samples[0]["correlation_group"] == "Buildings_001_LR2"
+    assert samples[9]["correlation_group"] == "Buildings_001_LR2"
+    assert samples[10]["correlation_group"] == "Buildings_001_LR3"
+    assert samples[19]["correlation_group"] == "Buildings_001_LR4"
+    assert len({sample["correlation_group"] for sample in samples}) == 180
+    assert samples[0]["heatmap_path"] == str(
+        (tmp_path / "heatmaps" / "Buildings_001_LR2_AIS.npy.gz").resolve()
+    )
+
+
 def test_sample_aware_statistics_uses_sample_id(tmp_path: Path) -> None:
     from qualisr.statistics import main as statistics_main
 
@@ -186,7 +211,9 @@ def test_sample_aware_bicubic_generation_updates_reference_paths(tmp_path: Path)
 def regressor_test_config() -> dict:
     return {
         "seed": 42,
+        "split_seed": 7,
         "scale_features": False,
+        "imputation": {"enabled": False, "strategy": "median"},
         "features": {
             "pca_n": 0,
             "include": ["nr"],
@@ -216,6 +243,7 @@ def regressor_samples(
                 "regressors": usage,
                 "sample_id": sample_id,
                 "test_case": str(index),
+                "correlation_group": str(index),
                 "score": index / max(count - 1, 1),
             }
         )
@@ -291,3 +319,338 @@ def test_training_dataset_test_split_is_grouped(tmp_path: Path) -> None:
     assert len(X_train) == 3
     assert len(X_validation) == 3
     assert set(X_train.index).isdisjoint(X_validation.index)
+
+
+def test_training_split_uses_split_seed_and_keeps_gt_groups_together(tmp_path: Path) -> None:
+    from qualisr.regressors import build_dataset, split_dataset
+
+    samples = regressor_samples(
+        "train-data",
+        tmp_path / "train-features",
+        {"train": True, "validate": True, "test_size": 0.5},
+        8,
+    )
+    for index, sample in enumerate(samples):
+        sample["test_case"] = f"gt-{index // 2}"
+    dataset = build_dataset(regressor_test_config(), samples)
+
+    first_cfg = {**regressor_test_config(), "seed": 1, "split_seed": 17}
+    second_cfg = {**regressor_test_config(), "seed": 999, "split_seed": 17}
+    first_train, first_validation, _, _ = split_dataset(dataset, first_cfg, samples)
+    second_train, second_validation, _, _ = split_dataset(dataset, second_cfg, samples)
+
+    assert first_train.index.tolist() == second_train.index.tolist()
+    assert first_validation.index.tolist() == second_validation.index.tolist()
+    train_groups = set(dataset.loc[first_train.index, "test_case"])
+    validation_groups = set(dataset.loc[first_validation.index, "test_case"])
+    assert train_groups.isdisjoint(validation_groups)
+
+
+def test_feature_imputation_uses_training_statistics_only() -> None:
+    from qualisr.regressors import prepare_dataset_split
+
+    dataset = pd.DataFrame(
+        {
+            "sample_id": ["train-a", "train-b", "validation-a", "validation-b"],
+            "dataset": ["data"] * 4,
+            "test_case": ["gt-a", "gt-b", "gt-c", "gt-d"],
+            "correlation_group": ["gt-a", "gt-b", "gt-c", "gt-d"],
+            "score_type": ["mos"] * 4,
+            "score": [0.1, 0.2, 0.3, 0.4],
+            "feature_a": [1.0, 3.0, np.nan, np.inf],
+            "feature_b": [10.0, 14.0, 100.0, np.nan],
+        }
+    )
+    cfg = {
+        "scale_features": False,
+        "imputation": {"enabled": True, "strategy": "median"},
+    }
+
+    X_train, X_validation, _, _ = prepare_dataset_split(dataset, cfg, [0, 1], [2, 3])
+
+    assert X_train["feature_a"].tolist() == [1.0, 3.0]
+    assert X_validation["feature_a"].tolist() == [2.0, 2.0]
+    assert X_validation["feature_b"].tolist() == [100.0, 12.0]
+
+
+def test_feature_imputation_rejects_feature_without_finite_training_value() -> None:
+    from qualisr.regressors import prepare_dataset_split
+
+    dataset = pd.DataFrame(
+        {
+            "sample_id": ["train-a", "train-b", "validation"],
+            "dataset": ["data"] * 3,
+            "test_case": ["gt-a", "gt-b", "gt-c"],
+            "correlation_group": ["gt-a", "gt-b", "gt-c"],
+            "score_type": ["mos"] * 3,
+            "score": [0.1, 0.2, 0.3],
+            "feature": [np.nan, np.inf, 1.0],
+        }
+    )
+    cfg = {
+        "scale_features": False,
+        "imputation": {"enabled": True, "strategy": "median"},
+    }
+
+    with pytest.raises(ValueError, match="no finite values"):
+        prepare_dataset_split(dataset, cfg, [0, 1], [2])
+
+
+def test_regressor_failure_is_saved_to_console_output(tmp_path: Path, capsys) -> None:
+    from qualisr.regressors import run_experiment
+
+    cfg = {
+        "experiment_name": "failing-run",
+        "paths": {"plots_root": str(tmp_path)},
+        "cross_validation": {"enabled": "invalid", "n_splits": 5},
+    }
+
+    with pytest.raises(ValueError, match="must be a boolean"):
+        run_experiment(cfg, [], make_plots=False)
+
+    captured = capsys.readouterr()
+    saved = (tmp_path / "failing-run" / "log.txt").read_text(encoding="utf-8")
+    assert "ERROR: Regressor stage failed with ValueError" in captured.err
+    assert "ERROR: Regressor stage failed with ValueError" in saved
+
+
+def test_forward_selection_failure_does_not_block_backward_selection(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import qualisr.regressors as regressors
+
+    def fail_forward(*args, **kwargs):
+        raise ValueError("synthetic forward failure")
+
+    backward = pd.DataFrame(
+        {
+            "direction": ["backward"],
+            "step": [0],
+            "n_features": [1],
+            "changed_feature": [""],
+            "plcc": [0.5],
+            "srcc": [0.5],
+            "features": ["feature"],
+        }
+    )
+    monkeypatch.setattr(regressors, "forward_selection", fail_forward)
+    monkeypatch.setattr(regressors, "backward_elimination", lambda *args, **kwargs: backward)
+    monkeypatch.setattr(regressors, "plot_feature_selection", lambda *args, **kwargs: None)
+    cfg = {
+        "analysis": {
+            "feature_selection": {
+                "features": ["feature"],
+                "directions": ["forward", "backward"],
+            }
+        }
+    }
+    X = pd.DataFrame({"feature": [0.0, 1.0]})
+    y = pd.Series([0.0, 1.0])
+
+    with pytest.warns(RuntimeWarning, match="forward feature selection"):
+        paths = regressors.save_feature_selection_analysis(X, y, X, y, tmp_path, cfg)
+
+    saved = pd.read_csv(paths["feature_selection_csv"])
+    assert saved["direction"].tolist() == ["backward"]
+
+
+def test_validation_correlations_pool_mos_and_average_bt_per_comparison_group() -> None:
+    from qualisr.regressors import validation_correlations
+
+    metadata = pd.DataFrame(
+        {
+            "dataset": ["mos-data"] * 4 + ["bt-data"] * 6,
+            "test_case": ["gt-a", "gt-a", "gt-b", "gt-b"] + ["shared-gt"] * 6,
+            "correlation_group": ["all"] * 4 + ["gt-1"] * 3 + ["gt-2"] * 3,
+            "score_type": ["mos"] * 4 + ["bradley_terry"] * 6,
+        }
+    )
+    target = [0, 1, 2, 3, 0, 1, 2, 0, 1, 2]
+    prediction = [0, 1, 2, 3, 0, 1, 2, 2, 1, 0]
+
+    plcc, srcc, per_dataset, details = validation_correlations(target, prediction, metadata)
+
+    mos = per_dataset.set_index("dataset").loc["mos-data"]
+    bt = per_dataset.set_index("dataset").loc["bt-data"]
+    assert mos["aggregation"] == "pooled"
+    assert mos["n_groups"] == 1
+    assert mos["plcc"] == 1.0
+    assert mos["srcc"] == 1.0
+    assert bt["aggregation"] == "mean_per_comparison_group"
+    assert bt["n_groups"] == 2
+    assert np.isclose(bt["plcc"], 0.0)
+    assert np.isclose(bt["srcc"], 0.0)
+    assert np.isclose(plcc, 0.5)
+    assert np.isclose(srcc, 0.5)
+    assert len(details[details["dataset"] == "mos-data"]) == 1
+    assert len(details[details["dataset"] == "bt-data"]) == 2
+
+
+def test_grouped_cross_validation_keeps_source_groups_together() -> None:
+    from qualisr.regressors import grouped_cross_validation_splits
+
+    dataset = pd.DataFrame(
+        [
+            {
+                "sample_id": f"dataset-{dataset_index}/method-{method}/{source}",
+                "dataset": f"dataset-{dataset_index}",
+                "test_case": source,
+                "score": 0.5,
+                "quality": 1.0,
+            }
+            for dataset_index in range(2)
+            for source in ("source-a", "source-b", "source-c")
+            for method in range(2)
+        ]
+    )
+    cfg = {
+        "seed": 42,
+        "split_seed": 42,
+        "cross_validation": {"enabled": True, "n_splits": 3},
+    }
+
+    splits = grouped_cross_validation_splits(dataset, cfg)
+    validation_indices = []
+    for train_indices, fold_validation_indices in splits:
+        train_groups = {
+            (dataset.loc[index, "dataset"], dataset.loc[index, "test_case"])
+            for index in train_indices
+        }
+        validation_groups = {
+            (dataset.loc[index, "dataset"], dataset.loc[index, "test_case"])
+            for index in fold_validation_indices
+        }
+        assert train_groups.isdisjoint(validation_groups)
+        validation_indices.extend(fold_validation_indices)
+
+    assert sorted(validation_indices) == dataset.index.tolist()
+
+
+def test_cross_validation_run_saves_fold_and_aggregate_outputs(tmp_path: Path) -> None:
+    from qualisr.regressors import run_experiment
+
+    samples = regressor_samples(
+        "train-data",
+        tmp_path / "features",
+        {"train": True, "validate": False, "test_size": 0},
+        10,
+    )
+    cfg = regressor_test_config()
+    cfg.update(
+        {
+            "experiment_name": "cv-test",
+            "cross_validation": {"enabled": True, "n_splits": 5},
+            "save_dataset_snapshot": True,
+            "save_mean_correlations": False,
+            "save_best_correlations": False,
+            "profiling": {"regressors": False},
+            "analysis": {
+                "outliers": {"enabled": False},
+                "feature_metrics": {"enabled": False},
+                "feature_selection": {"enabled": False},
+            },
+            "correlation_metrics": {"enabled": False, "items": []},
+            "paths": {"plots_root": str(tmp_path / "plots")},
+            "models": {"linear": {"enabled": True, "params": {}}},
+            "plot": {"enabled": False},
+        }
+    )
+
+    result = run_experiment(cfg, samples, make_plots=False)
+
+    assert len(result["fold_outputs"]) == 5
+    assert set(result["fold_results"]["fold"]) == {1, 2, 3, 4, 5}
+    assert result["results"].loc[0, "n_folds"] == 5
+    output_dir = Path(result["output_dir"])
+    assert (output_dir / "log.txt").is_file()
+    assignments = pd.read_csv(output_dir / "metadata" / "cross_validation_folds.csv")
+    predictions = pd.read_csv(output_dir / "predictions" / "predictions_linear.csv")
+    assert len(assignments) == len(predictions) == 10
+    assert set(assignments["fold"]) == {1, 2, 3, 4, 5}
+    assert (output_dir / "correlations" / "cross_validation_folds.csv").is_file()
+    assert (output_dir / "correlations" / "correlations.csv").is_file()
+
+
+def test_regressor_run_saves_separate_per_dataset_validation_outputs(tmp_path: Path) -> None:
+    from qualisr.regressors import run_experiment
+
+    samples = regressor_samples(
+        "train-data",
+        tmp_path / "train-features",
+        {"train": True, "validate": False, "test_size": 0},
+        6,
+    )
+    samples += regressor_samples(
+        "validation-a",
+        tmp_path / "validation-a-features",
+        {"train": False, "validate": True},
+        4,
+    )
+    validation_b = regressor_samples(
+        "validation-b",
+        tmp_path / "validation-b-features",
+        {"train": False, "validate": True},
+        4,
+    )
+    for index, sample in enumerate(validation_b):
+        sample["score_type"] = "bradley_terry"
+        sample["test_case"] = f"gt-{index // 2}"
+        sample["correlation_group"] = f"gt-{index // 2}"
+    samples += validation_b
+    cfg = regressor_test_config()
+    cfg.update(
+        {
+            "experiment_name": "per-dataset-test",
+            "cross_validation": {"enabled": False, "n_splits": 5},
+            "permutation_repeats": 3,
+            "save_dataset_snapshot": False,
+            "save_mean_correlations": False,
+            "save_best_correlations": False,
+            "profiling": {"regressors": False},
+            "analysis": {
+                "outliers": {"enabled": False},
+                "feature_metrics": {"enabled": False},
+                "feature_selection": {"enabled": False},
+            },
+            "correlation_metrics": {"enabled": False, "items": []},
+            "paths": {"plots_root": str(tmp_path / "plots")},
+            "models": {"linear": {"enabled": True, "params": {}}},
+            "plot": {
+                "enabled": {
+                    "importance": True,
+                    "all_importances": False,
+                    "shap": False,
+                    "all_shap_importances": False,
+                    "correlations": False,
+                    "correlations_without_metrics": False,
+                    "feature_correlations": False,
+                    "feature_cross_correlation_matrix": False,
+                    "prediction_scatter": False,
+                },
+                "importance_figsize": [4, 3],
+                "dpi": 72,
+            },
+        }
+    )
+
+    result = run_experiment(cfg, samples, make_plots=True)
+
+    assert set(result["per_dataset"]) == {"validation-a", "validation-b"}
+    output_dir = Path(result["output_dir"])
+    for dataset_name in ("validation-a", "validation-b"):
+        dataset_dir = output_dir / "per_dataset" / dataset_name
+        assert (dataset_dir / "correlations" / "correlations.csv").is_file()
+        assert (dataset_dir / "predictions" / "predictions_linear.csv").is_file()
+        assert (dataset_dir / "importances" / "importance_linear.csv").is_file()
+        assert (dataset_dir / "importances" / "importance_linear.png").is_file()
+        assert (dataset_dir / "feature_analysis" / "feature_correlations.csv").is_file()
+    bt_details = pd.read_csv(
+        output_dir
+        / "per_dataset"
+        / "validation-b"
+        / "correlations"
+        / "correlations_per_comparison_group.csv"
+    )
+    assert len(bt_details) == 2
+    assert set(bt_details["correlation_group"]) == {"gt-0", "gt-1"}

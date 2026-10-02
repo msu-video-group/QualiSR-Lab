@@ -168,7 +168,7 @@
         "enabled": true,
         "common": {
             "n_components": [
-                5, 10, 25, 50, 75, 100
+                5, 10, 25, 50, 75
             ],
             "output_dir": "{features_root}/pca",
             "disable_auto_split": false,
@@ -261,8 +261,17 @@
         "make_plots": true,
         "config": {
             "seed": 42,
+            "split_seed": 42,
             "experiment_name": "baseline",
             "scale_features": true,
+            "imputation": {
+                "enabled": true,
+                "strategy": "median"
+            },
+            "cross_validation": {
+                "enabled": false,
+                "n_splits": 5
+            },
             "permutation_repeats": 10,
             "save_dataset_snapshot": true,
             "save_mean_correlations": true,
