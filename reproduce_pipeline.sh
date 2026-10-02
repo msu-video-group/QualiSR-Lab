@@ -183,6 +183,27 @@ dst.write_text(json.dumps(cfg, indent=2) + "\n")
 PY
 }
 
+run_sample_stage() {
+  local module=$1
+  shift
+
+  # Use the same parsed sample IDs as the configured regressor stage.
+  run "$PYTHON" - "$PIPELINE_CONFIG" "$module" "$@" <<'PY'
+import importlib
+import json
+import sys
+from pathlib import Path
+
+from qualisr.datasets import load_datasets
+from qualisr.pipeline import config_base_dir
+
+config_path = Path(sys.argv[1])
+cfg = json.loads(config_path.read_text())
+samples = load_datasets(cfg["datasets"], base_dir=config_base_dir(config_path))
+importlib.import_module(sys.argv[2]).main(sys.argv[3:], samples=samples)
+PY
+}
+
 maybe_install_deps() {
   if [[ "$INSTALL_DEPS" == "1" ]]; then
     run "$PYTHON" -m pip install -e ".[features,regressors]"
@@ -199,7 +220,7 @@ maybe_make_references() {
     --lr-dir "$DATASET_BASE/lr" \
     --sr-dirs "${SR_ARGS[@]}" \
     --out-root "$DATASET_BASE/ref" \
-    --refs bicubic rlfn span \
+    --refs "${REF_ARRAY[@]}" \
     --scale 4 \
     --rlfn-script "${RLFN_SCRIPT:-realtime_sr/RLFN/inference-RLFN.py}" \
     --rlfn-ckpt "${RLFN_CKPT:-realtime_sr/RLFN/rlfn-tuned-4x.pth}" \
@@ -218,7 +239,7 @@ extract_feature_group() {
     FEATURE_PROFILE_ARGS+=(--profile-flops)
   fi
 
-  run "${QUALISR[@]}" extract-features \
+  run_sample_stage qualisr.features \
     --sr-dirs "${SR_ARGS[@]}" \
     --gt-dir "$DATASET_BASE/hr" \
     --lr-dir "$DATASET_BASE/lr" \
@@ -266,7 +287,7 @@ compute_stats() {
     STATS_PROFILE_ARGS+=(--profile --profile-output "$FEATURES_DIR/stats_profile.csv")
   fi
 
-  run "${QUALISR[@]}" compute-stats \
+  run_sample_stage qualisr.statistics \
     --heatmap-dirs "${HEATMAP_ARGS[@]}" \
     --output "$FEATURES_DIR/stats.csv" \
     --percentiles 5 95 \
@@ -276,7 +297,6 @@ compute_stats() {
 
 run_regressors() {
   mkdir -p "$PLOTS_DIR"
-  write_runtime_pipeline_config
 
   local -a REGRESSOR_ARGS=(--config "$PIPELINE_CONFIG" --plots-root "$PLOTS_DIR")
   if [[ "$SAVE_SVG" == "1" ]]; then
@@ -301,6 +321,7 @@ main() {
   download_dataset
   resolve_dataset_base
   build_dataset_args
+  write_runtime_pipeline_config
   maybe_make_references
   extract_features
   apply_pca
