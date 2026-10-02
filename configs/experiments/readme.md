@@ -96,94 +96,137 @@ Missing or infinite feature values are handled by `regressors.config.imputation`
 
 The imputer is fitted separately on each training split (and each cross-validation fold), then applied to its validation samples. A run fails explicitly if a feature has no finite training value from which to compute the configured statistic.
 
-## Focused SigLIP and Q-Align impact
+## Experimental categories
 
-The five configurations in `feature_impact/` share one control: NR metrics without Q-Align, RLFN-based FR metrics, VGG/ResNet PCA-5 features, and the compact artifact-statistic set `{max, median, std, area00}`. All five use the common grouped training and validation protocol, models, seeds, analyses, plots, and profiling settings.
+The categories below follow the directory layout. Configuration names and patterns are relative to the directory named in each heading. Every table lists the configuration, regressor inputs, training and validation protocol, and experimental purpose.
 
-| Config | Regressor inputs | Purpose |
-|---|---|---|
-| `baseline.json` | Shared compact-statistics baseline | Provide the matched control for both additions. |
-| `siglip_only.json` | SigLIP content fidelity, perceptual enhancement, and final RR score | Measure SigLIP as an individual feature family. |
-| `siglip_with_baseline.json` | Shared baseline plus all three SigLIP outputs | Measure the incremental effect of adding SigLIP. |
-| `qalign_only.json` | Q-Align only | Measure the standalone Q-Align signal. |
-| `qalign_with_baseline.json` | Shared baseline plus Q-Align | Measure the incremental effect of Q-Align and expose its importance relative to a heterogeneous feature pool. |
+For these tables:
 
-The Q-Align runs explicitly include Q-Align in metric comparisons and feature-selection candidates. `qalign_with_baseline.json` keeps feature-importance, combined-importance, and SHAP outputs enabled. Inspect `per_dataset/<dataset>/importances/importance_<model>.csv` and the corresponding plots for validation-set permutation importance; root-level importance plots use the models' native importance when available. Compare importances separately for each model and validation dataset; feature dominance is an experimental result, not a property assumed by the configuration.
+- **Default grouped protocol** means training on QualiSR-Set120 and DISRQAD with grouped 20% internal validation splits, plus validation-only ISRGen-QA and RealSRQ. Models, seeds, preprocessing, analyses, plots, profiling, and correlation aggregation follow the common protocol above.
+- **Baseline inputs** means NR metrics without Q-Align, RLFN-based FR metrics, and SR VGG/ResNet PCA-5 embeddings.
+- **Compact statistics** means the artifact-statistic set `{max, median, std, area00}`; **compact baseline** means baseline inputs plus compact statistics.
 
-## Standalone references and single-dataset transfer
+Unless a row explicitly includes Q-Align or varies the PCA dimension or reference, Q-Align is excluded, PCA dimension is 5, and FR metrics use RLFN. Pseudo-reference embeddings and SR–reference differences use the precomputed baseline bicubic pseudo-reference. GT-based FR runs are full-reference oracle comparisons and must be reported separately from reduced-reference rankings.
 
-The seven configurations in `reference_transfer/` cover two related evaluation groups. The four FR-only runs use the default grouped training on QualiSR-Set120 and DISRQAD, their 20% validation splits, and external validation on ISRGen-QA and RealSRQ. The existing RLFN-only counterpart remains `features/fr.json`.
+### Individual feature families (`features/`)
 
-| Config | Regressor inputs | Purpose |
-|---|---|---|
-| `fr_bicubic.json` | Six FR metrics computed against bicubic pseudo-references | Evaluate bicubic-based FR metrics as a standalone family. |
-| `fr_span.json` | Six FR metrics computed against SPAN pseudo-references | Evaluate SPAN-based FR metrics as a standalone family. |
-| `fr_gt_oracle.json` | Six FR metrics computed against true GT images | Provide a full-reference oracle; do not rank it as a reduced-reference method. |
-| `fr_all_pseudo_references.json` | FR metrics for RLFN, SPAN, and bicubic together | Test whether the three pseudo-reference views complement one another in one model. |
+These configurations isolate one feature family or vary its representation size or artifact-statistic subset.
 
-The three transfer runs copy the existing `datasets/train_*.json` protocol: train on one complete MOS dataset with no internal split, validate on the other two MOS datasets, and use the baseline NR (without Q-Align), RLFN-FR, VGG PCA-5, and ResNet PCA-5 features. They additionally validate on RealSRQ. RealSRQ remains validation-only, and its Bradley–Terry correlations are computed within each source-image/scale group before averaging.
+| Configuration | Regressor inputs | Training and validation | Purpose |
+|---|---|---|---|
+| `nr.json` | NR metrics without Q-Align | Default grouped protocol | Measure the standalone NR feature family. |
+| `fr.json` | Six RLFN-based FR metrics | Default grouped protocol | Measure the standalone pseudo-reference FR feature family. |
+| `vgg_pca_*.json` | SR VGG embeddings at PCA dimensions 5, 10, 25, 50, and 75 | Default grouped protocol | Measure the effect of VGG representation size. |
+| `resnet_pca_*.json` | SR ResNet embeddings at PCA dimensions 5, 10, 25, 50, and 75 | Default grouped protocol | Measure the effect of ResNet representation size. |
+| `stats_*.json` | Artifact-statistic subsets specified by each configuration's `stats_columns` | Default grouped protocol | Compare artifact-statistic subsets. |
 
-| Config | Training dataset | Validation datasets |
-|---|---|---|
-| `train_qualisr_set120_with_realsrq.json` | QualiSR-Set120 | DISRQAD, ISRGen-QA, RealSRQ |
-| `train_dsr_dataset_with_realsrq.json` | DISRQAD | QualiSR-Set120, ISRGen-QA, RealSRQ |
-| `train_isrgen_qa_with_realsrq.json` | ISRGen-QA | QualiSR-Set120, DISRQAD, RealSRQ |
+### FR-reference comparisons (`fr_references/`)
 
-## NR-centered complementary families
+These configurations change only the FR reference within the baseline feature set. Unlike the FR-only runs in `reference_transfer/`, they retain NR metrics and SR embeddings.
 
-The five configurations in `nr_combinations/` isolate what each reduced-reference family contributes when paired with the four principal NR metrics (MUSIQ, ARNIQA, UNIQUE, and PaQ-2-PiQ). Q-Align remains excluded. All runs use the common grouped training and validation protocol and PCA dimension 5. Artifact statistics use the compact `{max, median, std, area00}` set. FR metrics use RLFN, while the precomputed pseudo-GT embeddings and SR–reference differences use the pipeline's baseline bicubic pseudo-reference.
+| Configuration | Regressor inputs | Training and validation | Purpose |
+|---|---|---|---|
+| `fr_rlfn.json` | Baseline inputs with RLFN-based FR metrics | Default grouped protocol | Provide the baseline reference comparison. |
+| `fr_bicubic.json` | Baseline inputs with bicubic-based FR metrics replacing RLFN-FR | Default grouped protocol | Measure the effect of using bicubic pseudo-references. |
+| `fr_span.json` | Baseline inputs with SPAN-based FR metrics replacing RLFN-FR | Default grouped protocol | Measure the effect of using SPAN pseudo-references. |
+| `fr_hr.json` | Baseline inputs with GT-based FR metrics replacing RLFN-FR | Default grouped protocol | Provide a full-reference oracle comparison. |
 
-| Config | Regressor inputs | Purpose |
-|---|---|---|
-| `nr_rlfn_fr.json` | NR + six RLFN-based FR metrics | Measure the complementarity of scalar NR and pseudo-reference FR cues. |
-| `nr_artifact_statistics.json` | NR + four artifact statistics | Measure the contribution of compact spatial-artifact summaries. |
-| `nr_pseudo_gt_embeddings.json` | NR + bicubic pseudo-GT VGG/ResNet PCA-5 embeddings | Measure whether reference representations complement NR metrics. |
-| `nr_embedding_differences.json` | NR + VGG/ResNet PCA-5 SR–reference differences | Measure whether representation differences complement NR metrics. |
-| `nr_all_complementary_features.json` | NR + RLFN-FR + pseudo-GT embeddings + embedding differences + four artifact statistics | Evaluate all four complementary families together without raw SR embeddings. |
+### Embedding representations (`embeddings/`)
 
-The tree regressors consume every configured input column. Forward/backward Ridge selection uses all scalar candidates in the two scalar runs and a prespecified cross-family candidate pool in the embedding runs, keeping the exploratory selection report tractable without changing the fitted tree-regressor inputs.
+These configurations isolate VGG/ResNet PCA-5 representations of SR images, bicubic pseudo-references, or their signed differences.
 
-## General feature combinations
+| Configuration | Regressor inputs | Training and validation | Purpose |
+|---|---|---|---|
+| `sr_embeddings.json` | SR VGG/ResNet PCA-5 embeddings | Default grouped protocol | Measure the standalone SR representation signal. |
+| `reference_embeddings.json` | Bicubic pseudo-reference VGG/ResNet PCA-5 embeddings | Default grouped protocol | Measure the standalone reference representation signal. |
+| `embedding_difference.json` | Signed VGG/ResNet PCA-5 SR–reference differences | Default grouped protocol | Measure the standalone representation-difference signal. |
 
-The ten configurations in `combinations/` all use the default grouped 20% validation splits from QualiSR-Set120 and DISRQAD, with ISRGen-QA and RealSRQ entirely held out for validation. They keep the same models, seeds, scaling, imputation, correlation aggregation, and profiling settings. Feature inputs and corresponding diagnostics are the main differences.
+### General feature combinations (`combinations/`)
+
+The ten configurations compare mixed feature pools and seeded noise controls under the default grouped protocol. Feature inputs and corresponding diagnostics are the main differences.
 
 `all_rr_features.json` loads every feature family already mapped in this suite at PCA=5: all NR metrics (including Q-Align), FR metrics against bicubic/RLFN/SPAN pseudo-references, SigLIP outputs, SR and pseudo-reference VGG/ResNet embeddings, their differences, and all artifact-mask statistics. `all_supported_oracle.json` adds GT-based FR columns to that pool. It is a full-reference oracle comparison, not a reduced-reference candidate, and its correlations must be reported separately. Uncompressed high-dimensional embeddings are outside this suite's PCA-5 baseline. GT-based direct metric comparators may still appear in RR correlation reports but are not RR regressor inputs.
 
-| Config | Regressor inputs | Question |
-|---|---|---|
-| `all_rr_features.json` | All mapped reduced-reference feature families and all ten artifact statistics | How does the broad feature pool perform? |
-| `all_supported_oracle.json` | Broad feature pool plus GT-based FR metrics (oracle) | How does the full-reference oracle compare? |
-| `pruned_rr_features.json` | NR (without Q-Align), RLFN-FR, SR and difference embeddings, four artifact statistics | Does a fixed smaller pool compete with the broad one? |
-| `nr_fr_artifacts.json` | NR, RLFN-FR, four artifact statistics | Are scalar quality cues sufficient without embeddings? |
-| `fr_sr_artifacts.json` | RLFN-FR, SR VGG/ResNet PCA-5, four artifact statistics | Do FR and SR-representation cues complement each other without NR metrics? |
-| `nr_fr_reference_difference.json` | NR, RLFN-FR, pseudo-reference and difference embeddings, four artifact statistics | Can reference-relative representations replace raw SR embeddings? |
-| `nr_fr_siglip_artifacts.json` | NR, RLFN-FR, SigLIP outputs, four artifact statistics | Does SigLIP add value to compact scalar cues? |
-| `minimal_three_signals.json` | LPIPS-VGG+RLFN, VGG SR–reference difference component 0, artifact `area00`; no NR metrics | How far can one signal from each of three RR feature families go? |
-| `noise_only.json` | Five Gaussian and five uniform noise columns | What performance can an all-noise input pool appear to achieve? |
-| `noise_with_baseline.json` | Baseline NR, RLFN-FR, SR VGG/ResNet PCA-5, four artifact statistics, plus ten noise columns | Which real features exceed the validation-set noise floor? |
+| Configuration | Regressor inputs | Training and validation | Purpose |
+|---|---|---|---|
+| `all_rr_features.json` | All mapped reduced-reference feature families and all ten artifact statistics | Default grouped protocol | Evaluate the broad reduced-reference feature pool. |
+| `all_supported_oracle.json` | Broad feature pool plus GT-based FR metrics (oracle) | Default grouped protocol | Compare the broad pool with a full-reference oracle. |
+| `pruned_rr_features.json` | NR (without Q-Align), RLFN-FR, SR and difference embeddings, compact statistics | Default grouped protocol | Compare a fixed smaller pool with the broad pool. |
+| `nr_fr_artifacts.json` | NR, RLFN-FR, compact statistics | Default grouped protocol | Evaluate scalar quality cues without embeddings. |
+| `fr_sr_artifacts.json` | RLFN-FR, SR VGG/ResNet PCA-5, compact statistics | Default grouped protocol | Measure the complementarity of FR and SR-representation cues without NR metrics. |
+| `nr_fr_reference_difference.json` | NR, RLFN-FR, pseudo-reference and difference embeddings, compact statistics | Default grouped protocol | Test whether reference-relative representations can replace raw SR embeddings. |
+| `nr_fr_siglip_artifacts.json` | NR, RLFN-FR, SigLIP outputs, compact statistics | Default grouped protocol | Measure the contribution of SigLIP to compact scalar cues. |
+| `minimal_three_signals.json` | LPIPS-VGG+RLFN, VGG SR–reference difference component 0, artifact `area00`; no NR metrics | Default grouped protocol | Evaluate one signal from each of three reduced-reference feature families. |
+| `noise_only.json` | Five Gaussian and five uniform noise columns | Default grouped protocol | Check for apparent performance from an all-noise input pool. |
+| `noise_with_baseline.json` | Compact baseline plus ten noise columns | Default grouped protocol | Compare real-feature importances with a validation-set noise floor. |
 
 The pruned set is explicitly specified in the configuration. The tree regressors use every input column configured for each run. Ridge forward/backward selection analyzes a predefined, cross-family candidate list (all columns for the minimal and noise-only sets), keeping the search size manageable. Selection and comparisons on these validation sets are exploratory; any newly chosen configuration needs an independent evaluation before being reported as a general best combination. The oracle run cannot be included in a reduced-reference ranking.
 
 For each model and validation dataset, `noise_with_baseline` saves `per_dataset/<dataset>/importances/noise_floor_<model>.csv`. The floor is the largest absolute permutation importance among the ten noise columns, using the regressor's default R² scoring. Compare absolute magnitudes in `importance_<model>.csv` against this exploratory threshold. It is not a significance test or transferable cutoff. Interpret it on MOS datasets: RealSRQ scores are comparable only within source-image/scale groups, whereas permutation importance uses whole-dataset R². `noise_only` checks for apparent all-noise correlations; its importances use a different model baseline.
 
-## Dataset experiments
+### Focused SigLIP and Q-Align impact (`feature_impact/`)
 
-The `datasets/` configurations use the baseline NR (without Q-Align), RLFN-FR, and VGG/ResNet PCA-5 features:
+The five configurations use the compact baseline as a matched control for standalone and incremental SigLIP and Q-Align studies. All five use the default grouped protocol.
 
-| Config pattern | Training and validation |
-|---|---|
-| `train_*.json` | Train on one complete MOS dataset; validate on the other two. |
-| `mix_*.json` | Train on the named complete datasets; validate on remaining MOS datasets and RealSRQ. `mix_all` validates only on RealSRQ. |
-| `qualisr_impact_*.json` | Compare training with and without QualiSR-Set120, with and without compact artifact statistics. Hold out 20% of each training dataset; validate on the remaining datasets. |
-| `cv_*.json` | Five-fold grouped cross-validation on the named dataset(s); RealSRQ is excluded. |
+| Configuration | Regressor inputs | Training and validation | Purpose |
+|---|---|---|---|
+| `baseline.json` | Compact baseline | Default grouped protocol | Provide the matched control for both additions. |
+| `siglip_only.json` | SigLIP content fidelity, perceptual enhancement, and final RR score | Default grouped protocol | Measure SigLIP as an individual feature family. |
+| `siglip_with_baseline.json` | Compact baseline plus all three SigLIP outputs | Default grouped protocol | Measure the incremental effect of adding SigLIP. |
+| `qalign_only.json` | Q-Align only | Default grouped protocol | Measure the standalone Q-Align signal. |
+| `qalign_with_baseline.json` | Compact baseline plus Q-Align | Default grouped protocol | Measure the incremental effect of Q-Align and expose its importance relative to a heterogeneous feature pool. |
 
-## Individual features and representations
+The Q-Align runs explicitly include Q-Align in metric comparisons and feature-selection candidates. `qalign_with_baseline.json` keeps feature-importance, combined-importance, and SHAP outputs enabled. Inspect `per_dataset/<dataset>/importances/importance_<model>.csv` and the corresponding plots for validation-set permutation importance; root-level importance plots use the models' native importance when available. Compare importances separately for each model and validation dataset; feature dominance is an experimental result, not a property assumed by the configuration.
 
-- `features/nr.json` and `features/fr.json` isolate NR metrics without Q-Align and RLFN-based FR metrics, respectively.
-- `features/vgg_pca_*.json` and `features/resnet_pca_*.json` vary PCA dimensions over 5, 10, 25, 50, and 75.
-- `features/stats_*.json` compare artifact-statistic subsets; the exact columns are listed in each configuration's `stats_columns`.
-- `fr_references/` changes the FR reference within the baseline feature set. `fr_hr.json` uses GT and is a full-reference comparison.
-- `embeddings/` isolates SR embeddings, bicubic-reference embeddings, or signed SR–reference differences.
+### Standalone references and single-dataset transfer (`reference_transfer/`)
+
+The seven configurations cover two evaluation groups: standalone FR families under the default grouped protocol, and single-dataset transfer with RealSRQ validation.
+
+#### Standalone FR families
+
+The four FR-only runs vary the reference or combine pseudo-references. The existing RLFN-only counterpart remains `features/fr.json`.
+
+| Configuration | Regressor inputs | Training and validation | Purpose |
+|---|---|---|---|
+| `fr_bicubic.json` | Six FR metrics computed against bicubic pseudo-references | Default grouped protocol | Evaluate bicubic-based FR metrics as a standalone family. |
+| `fr_span.json` | Six FR metrics computed against SPAN pseudo-references | Default grouped protocol | Evaluate SPAN-based FR metrics as a standalone family. |
+| `fr_gt_oracle.json` | Six FR metrics computed against true GT images | Default grouped protocol | Provide a full-reference oracle; do not rank it as a reduced-reference method. |
+| `fr_all_pseudo_references.json` | FR metrics for RLFN, SPAN, and bicubic together | Default grouped protocol | Test whether the three pseudo-reference views complement one another in one model. |
+
+#### Single-dataset transfer
+
+The three transfer runs copy the existing `datasets/train_*.json` protocol: train on one complete MOS dataset with no internal split, validate on the other two MOS datasets, and use baseline inputs. They additionally validate on RealSRQ. RealSRQ remains validation-only, and its Bradley–Terry correlations are computed within each source-image/scale group before averaging.
+
+| Configuration | Regressor inputs | Training and validation | Purpose |
+|---|---|---|---|
+| `train_qualisr_set120_with_realsrq.json` | Baseline inputs | Train on complete QualiSR-Set120; validate on DISRQAD, ISRGen-QA, and RealSRQ | Measure transfer from QualiSR-Set120, including RealSRQ. |
+| `train_dsr_dataset_with_realsrq.json` | Baseline inputs | Train on complete DISRQAD; validate on QualiSR-Set120, ISRGen-QA, and RealSRQ | Measure transfer from DISRQAD, including RealSRQ. |
+| `train_isrgen_qa_with_realsrq.json` | Baseline inputs | Train on complete ISRGen-QA; validate on QualiSR-Set120, DISRQAD, and RealSRQ | Measure transfer from ISRGen-QA, including RealSRQ. |
+
+### NR-centered complementary families (`nr_combinations/`)
+
+The five configurations isolate what each reduced-reference family contributes when paired with the four principal NR metrics (MUSIQ, ARNIQA, UNIQUE, and PaQ-2-PiQ). All runs use the default grouped protocol, exclude Q-Align, and use PCA dimension 5, RLFN-FR metrics, bicubic pseudo-reference representations, and compact statistics where applicable.
+
+| Configuration | Regressor inputs | Training and validation | Purpose |
+|---|---|---|---|
+| `nr_rlfn_fr.json` | NR + six RLFN-based FR metrics | Default grouped protocol | Measure the complementarity of scalar NR and pseudo-reference FR cues. |
+| `nr_artifact_statistics.json` | NR + compact statistics | Default grouped protocol | Measure the contribution of compact spatial-artifact summaries. |
+| `nr_pseudo_gt_embeddings.json` | NR + bicubic pseudo-reference VGG/ResNet PCA-5 embeddings | Default grouped protocol | Measure whether reference representations complement NR metrics. |
+| `nr_embedding_differences.json` | NR + VGG/ResNet PCA-5 SR–reference differences | Default grouped protocol | Measure whether representation differences complement NR metrics. |
+| `nr_all_complementary_features.json` | NR + RLFN-FR + pseudo-reference embeddings + embedding differences + compact statistics | Default grouped protocol | Evaluate all four complementary families together without raw SR embeddings. |
+
+The tree regressors consume every configured input column. Forward/backward Ridge selection uses all scalar candidates in the two scalar runs and a prespecified cross-family candidate pool in the embedding runs, keeping the exploratory selection report tractable without changing the fitted tree-regressor inputs.
+
+### Dataset experiments (`datasets/`)
+
+These configurations vary the training data or evaluation protocol while keeping baseline inputs. The QualiSR-Set120 impact runs additionally vary whether compact statistics are included.
+
+| Configuration | Regressor inputs | Training and validation | Purpose |
+|---|---|---|---|
+| `train_*.json` | Baseline inputs | Train on one complete MOS dataset with no internal split; validate on the other two MOS datasets | Measure single-dataset transfer among MOS datasets. |
+| `mix_*.json` | Baseline inputs | Train on the named complete datasets; validate on remaining MOS datasets and RealSRQ. `mix_all` validates only on RealSRQ | Measure the effect of mixed-dataset training. |
+| `qualisr_impact_*.json` | Baseline inputs, with or without compact statistics | Train on DISRQAD with or without QualiSR-Set120, holding out a grouped 20% of each training dataset; also validate on remaining datasets | Measure the training contribution of QualiSR-Set120, with and without compact statistics. |
+| `cv_*.json` | Baseline inputs | Five-fold grouped cross-validation on the named MOS dataset(s); RealSRQ is excluded | Measure performance across grouped folds. |
 
 ## PCA and cross-validation
 
