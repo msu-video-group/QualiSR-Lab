@@ -2,13 +2,20 @@ include LICENSE
 include README.md
 include THIRD_PARTY_NOTICES.md
 include environment.yml
+include requirements.txt
+include Dockerfile
+include .dockerignore
 include logo.png
 include pipeline.png
 include reproduce_pipeline.sh
-recursive-include qualisr/configs *.json
+recursive-include qualisr/configs *.json *.md
 recursive-include qualisr/sample_data *.csv
+recursive-include configs *.json *.md
+recursive-include scripts *.py
+recursive-include tests *.py
 
 prune .agents
+prune .aws
 prune .codex
 prune .git
 prune .ruff_cache
@@ -20,6 +27,12 @@ prune realtime_sr
 prune scores
 prune venv
 include dataset/readme.md
+include dataset/labels.csv
 include features/readme.md
+include features/fr.csv
+include features/nr.csv
+include features/pca/vgg_pca5.csv
+include features/pca/resnet_pca5.csv
+recursive-include realtime_sr *.py
 global-exclude __pycache__/*
 global-exclude *.py[cod]

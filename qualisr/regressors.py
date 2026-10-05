@@ -1074,7 +1074,7 @@ def init_lgbm_model(cfg: dict[str, Any], model_name: str) -> Any:
     try:
         from lightgbm import LGBMRegressor
     except ImportError as exc:
-        raise _missing_optional("lightgbm", "regressors") from exc
+        raise ImportError("Optional model 'lgbm' requires a separate installation of lightgbm.") from exc
 
     return LGBMRegressor(**model_params(cfg, model_name, {"random_state": cfg["seed"], "verbosity": -1}))
 
@@ -1379,7 +1379,7 @@ def compute_model_shap_values(
     except ImportError:
         warnings.warn(
             "Optional dependency 'shap' is required for SHAP plots. "
-            "Install it with `pip install -e .[regressors]` or set "
+            "Install it with `pip install shap` or set "
             "`plot.enabled.shap` to false in the config.",
             stacklevel=2,
         )

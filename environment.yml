@@ -5,4 +5,5 @@ dependencies:
   - python=3.12
   - pip
   - pip:
-      - -e .[features,regressors,notebook,dev]
+      - -r requirements.txt
+      - -e .

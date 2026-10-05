@@ -1,6 +1,5 @@
 <div align=center class="logo">
-      <img src="logo.png" style="width:640px">
-   </a>
+      <img src="https://raw.githubusercontent.com/sangwyn/QualiSR-Lab/main/logo.png" style="width:640px">
 </div>
 
 # QualiSR-Lab: Reduced-Reference IQA for SR
@@ -32,16 +31,16 @@ The proposed pipeline is:
 
 The sections below describe the required data format and the workflow.
 
-![Pipeline overview](pipeline.png)
+![Pipeline overview](https://raw.githubusercontent.com/sangwyn/QualiSR-Lab/main/pipeline.png)
 
 ---
 
 ## Installation and quickstart
 
-Python 3.10 or later is required. From the repository root:
+Python 3.12 or 3.13 is required. From the repository root:
 
 ```bash
-python -m pip install -e ".[regressors]"
+python -m pip install -c requirements.txt -e ".[regressors]"
 qualisr-run-regressors
 ```
 
@@ -50,35 +49,59 @@ This runs Random Forest, XGBoost, and CatBoost on the packaged labels and precom
 For image feature extraction, install the additional dependencies:
 
 ```bash
-python -m pip install -e ".[features,regressors]"
+python -m pip install -c requirements.txt -e ".[features,regressors]"
 ```
 
 The [PyPI package](https://pypi.org/project/qualisr-lab/) is also available:
 
 ```bash
-python -m pip install "qualisr-lab[features,regressors]"
+python -m pip install "qualisr-lab[features,regressors]==0.2.0"
 ```
 
 The Docker image includes regression dependencies and runs the bundled example without plots:
 
 ```bash
-docker build -t qualisr-lab .
-docker run --rm --mount type=bind,source="${PWD}/plots",target=/app/plots qualisr-lab
+docker build -t qualisr-lab:0.2.0 .
+mkdir -p plots
+docker run --rm --mount type=bind,source="${PWD}/plots",target=/app/plots qualisr-lab:0.2.0
 ```
 
 Create the local `plots/` directory first if needed. The mount preserves results after the container exits. For an interactive shell, append `bash` and add `-it` to `docker run`.
 
-The legacy fully pinned environment is kept in `requirements.txt`.
+Docker applies `requirements.txt` as constraints, including transitive dependencies.
+To build the complete pinned Linux/CUDA environment instead, use
+`docker build --build-arg QUALISR_EXTRAS=all -t qualisr-lab:0.2.0-all .`.
+The full environment is large and includes NVIDIA libraries; GPU execution also requires
+the container runtime's GPU support.
 
-See [dataset/readme.md](dataset/readme.md) for dataset download notes and the parser/sample interface for custom datasets.
+For the complete pinned environment locally, including notebook and development dependencies:
+
+```bash
+python -m pip install -r requirements.txt -e .
+# Alternatively, from PyPI:
+python -m pip install "qualisr-lab[all]==0.2.0"
+# Or with Conda from the repository root:
+conda env create -f environment.yml
+```
+
+The `notebook` extra provides IPython and an IPython kernel; the `dev` extra provides
+pytest and Ruff. LightGBM and the separate `shap` package are optional integrations
+outside the pinned environment; install them separately if needed. XGBoost's native
+SHAP computation remains available with the `regressors` extra.
+
+The wheel includes the current pipeline config, experiment JSONs, and the five CSVs
+used by the bundled example. Experiment configs still require their external datasets
+and locally configured paths. Release preparation is documented in [RELEASE.md](https://github.com/sangwyn/QualiSR-Lab/blob/main/RELEASE.md).
+
+See [dataset/readme.md](https://github.com/sangwyn/QualiSR-Lab/blob/main/dataset/readme.md) for dataset download notes and the parser/sample interface for custom datasets.
 
 ---
 
 ## Run with image datasets
 
-Download [QualiSR-Set120](dataset/readme.md#download), then run commands from the repository root. The unified runner loads the configured datasets once and uses consistent sample IDs across feature extraction, artifact statistics, and regression.
+Download [QualiSR-Set120](https://github.com/sangwyn/QualiSR-Lab/blob/main/dataset/readme.md#download), then run commands from the repository root. The unified runner loads the configured datasets once and uses consistent sample IDs across feature extraction, artifact statistics, and regression.
 
-Before running the full pipeline, edit [`configs/pipeline.json`](configs/pipeline.json):
+Before running the full pipeline, edit [`configs/pipeline.json`](https://github.com/sangwyn/QualiSR-Lab/blob/main/configs/pipeline.json):
 
 - Set each dataset's `root` and `features_root`.
 - Select the feature groups and metrics needed for the experiment. Reference embeddings, generic timm embeddings, and embedding differences are disabled by default.
@@ -98,7 +121,7 @@ qualisr-run-pipeline --config configs/pipeline.json --only-section pca statistic
 qualisr-run-regressors --config configs/pipeline.json
 ```
 
-An explicit dataset configuration requires the LR/SR image files. Omit `--config` for the image-free bundled example. For custom parsers, dataset roles, and path rules, see the [dataset guide](dataset/readme.md). For ablations, transfer studies, and grouped cross-validation, see the [experiment suite](configs/experiments/README.md).
+An explicit dataset configuration requires the LR/SR image files. Omit `--config` for the image-free bundled example. For custom parsers, dataset roles, and path rules, see the [dataset guide](https://github.com/sangwyn/QualiSR-Lab/blob/main/dataset/readme.md). For ablations, transfer studies, and grouped cross-validation, see the [experiment suite](https://github.com/sangwyn/QualiSR-Lab/blob/main/configs/experiments/readme.md).
 
 ---
 
@@ -132,7 +155,7 @@ run_pipeline(
 To download the dataset and run feature extraction, PCA, artifact statistics, and regressor analysis end to end:
 
 ```bash
-python -m pip install -e ".[features,regressors]"
+python -m pip install -r requirements.txt -e .
 qualisr-run-pipeline --config configs/pipeline.json
 ```
 
@@ -148,7 +171,7 @@ The script writes feature-group CSVs such as `features/fr.csv`, `features/nr.csv
 
 ## Workflow
 
-You may either launch the whole pipeline in a single command with your JSON config as in the previous section or do each step separately. The unified pipeline parses the configured `datasets` entries into one shared sample list; datasets may use a bundled parser, a parser function from a user Python file, or explicit labels/image directories. Multiple entries are combined in one run. See [dataset/readme.md](dataset/readme.md) for the complete contract.
+You may either launch the whole pipeline in a single command with your JSON config as in the previous section or do each step separately. The unified pipeline parses the configured `datasets` entries into one shared sample list; datasets may use a bundled parser, a parser function from a user Python file, or explicit labels/image directories. Multiple entries are combined in one run. See [dataset/readme.md](https://github.com/sangwyn/QualiSR-Lab/blob/main/dataset/readme.md) for the complete contract.
 
 The standalone commands below retain their directory-based arguments for focused use outside the unified pipeline.
 
@@ -282,7 +305,7 @@ qualisr-run-regressors --config configs/pipeline.json
 
 Training and validation datasets, their split behavior, and their feature
 roots are declared once in the top-level `datasets` list. See
-[dataset/readme.md](dataset/readme.md#selecting-datasets).
+[dataset/readme.md](https://github.com/sangwyn/QualiSR-Lab/blob/main/dataset/readme.md#selecting-datasets).
 
 You can also use [regressors.ipynb](regressors.ipynb) notebook for experimentsn; install `.[regressors,notebook]` to use it. It trains regressors, evaluates them, and visualizes:
 
@@ -296,8 +319,8 @@ The first notebook cell describes the workflow for running experiments individua
 
 Example outputs:
 
-![Feature importances](plots/example@pca5/importances/all_models_importances.png)
-![Correlations](plots/example@pca5/correlations/correlations.png)
+![Feature importances](https://raw.githubusercontent.com/sangwyn/QualiSR-Lab/main/plots/example@pca5/importances/all_models_importances.png)
+![Correlations](https://raw.githubusercontent.com/sangwyn/QualiSR-Lab/main/plots/example@pca5/correlations/correlations.png)
 
 ### Profiling
 
@@ -309,7 +332,7 @@ For regression, `--profile` writes runtime and prediction-cost estimates under t
 
 ## Feature Types
 
-This section summarizes the feature groups used in the pipeline. For references and guidelines to adding custom features, address [features/readme.md](features/readme.md).
+This section summarizes the feature groups used in the pipeline. For references and guidelines to adding custom features, address [features/readme.md](https://github.com/sangwyn/QualiSR-Lab/blob/main/features/readme.md).
 
 ### No-Reference (NR) metrics
 
@@ -388,4 +411,4 @@ The project extracts the following summary statistics from artifact masks:
 
 ## License
 
-Project code is released under the [BSD-3-Clause license](LICENSE). Third-party code, checkpoints, and datasets have separate terms; see [third-party notices](THIRD_PARTY_NOTICES.md) and the [dataset guide](dataset/readme.md#license).
+Project code is released under the [BSD-3-Clause license](https://github.com/sangwyn/QualiSR-Lab/blob/main/LICENSE). Third-party code, checkpoints, and datasets have separate terms; see [third-party notices](https://github.com/sangwyn/QualiSR-Lab/blob/main/THIRD_PARTY_NOTICES.md) and the [dataset guide](https://github.com/sangwyn/QualiSR-Lab/blob/main/dataset/readme.md#license).

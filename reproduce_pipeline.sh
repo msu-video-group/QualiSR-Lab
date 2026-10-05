@@ -206,7 +206,7 @@ PY
 
 maybe_install_deps() {
   if [[ "$INSTALL_DEPS" == "1" ]]; then
-    run "$PYTHON" -m pip install -e ".[features,regressors]"
+    run "$PYTHON" -m pip install -r requirements.txt -e .
   fi
 }
 

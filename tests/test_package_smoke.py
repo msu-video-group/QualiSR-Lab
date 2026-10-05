@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import os
 import subprocess
 import sys
@@ -173,15 +174,29 @@ def test_missing_explicit_config_does_not_fall_back_to_packaged_default(tmp_path
     raise AssertionError("missing explicit config unexpectedly loaded packaged default")
 
 
-def test_regressors_load_samples_from_unified_pipeline_config() -> None:
+def test_regressors_load_samples_from_unified_pipeline_config(tmp_path) -> None:
+    from PIL import Image
+
     from qualisr.regressors import load_config_with_samples
 
     repo_root = Path(__file__).resolve().parents[1]
-    cfg, samples = load_config_with_samples(repo_root / "configs" / "pipeline.json")
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
+    labels_path = dataset_root / "labels.csv"
+    labels_path.write_bytes((repo_root / "dataset/labels.csv").read_bytes())
+    for row in csv.DictReader(labels_path.open(encoding="utf-8")):
+        for relative in (row["image"], f'hr/{row["test_case"]}.png', f'lr/{row["test_case"]}.png'):
+            path = dataset_root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (8, 8)).save(path)
+    config_path = tmp_path / "configs/pipeline.json"
+    config_path.parent.mkdir()
+    config_path.write_bytes((repo_root / "configs/pipeline.json").read_bytes())
+    cfg, samples = load_config_with_samples(config_path)
 
     assert len(samples) == 120
     assert {sample["regressors"]["test_size"] for sample in samples} == {0.2}
-    assert {sample["features_root"] for sample in samples} == {str(repo_root / "features")}
+    assert {sample["features_root"] for sample in samples} == {str(tmp_path / "features")}
     assert "dataset" not in cfg
     assert "features_root" not in cfg["paths"]
 

@@ -25,6 +25,9 @@ def test_extracts_sr_and_selected_reference_embeddings(tmp_path: Path, monkeypat
     model = object()
     transform = object()
     monkeypatch.setattr(features, "require_feature_dependencies", lambda: None)
+    monkeypatch.setattr(features, "resolve_device", lambda device: device)
+    monkeypatch.setattr(features, "image_to_tensor", lambda image, device: None)
+    monkeypatch.setattr(features, "timed_call", lambda profiler, name, function, device: function())
     monkeypatch.setattr(features, "init_vgg", lambda device: (model, transform))
     monkeypatch.setattr(features, "init_resnet", lambda device: (model, transform))
     monkeypatch.setattr(
@@ -75,6 +78,7 @@ def test_reference_embeddings_require_a_configured_reference(tmp_path: Path, mon
     from qualisr import features
 
     monkeypatch.setattr(features, "require_feature_dependencies", lambda: None)
+    monkeypatch.setattr(features, "resolve_device", lambda device: device)
     with pytest.raises(ValueError, match="--embedding-reference"):
         features.main(
             ["--features", "ref-vgg", "--device", "cpu", "--output", str(tmp_path / "out.csv")],
