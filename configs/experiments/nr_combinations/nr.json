@@ -60,7 +60,7 @@
     "config": {
       "seed": 42,
       "split_seed": 42,
-      "experiment_name": "nr_combinations_qalign/nr_pseudo_gt_embeddings",
+      "experiment_name": "nr_combinations_qalign/nr",
       "scale_features": true,
       "imputation": {
         "enabled": true,
@@ -99,9 +99,7 @@
             "arniqa",
             "unique",
             "paq2piq",
-            "qalign",
-            "vgg_pca_000",
-            "resnet_pca_000"
+            "qalign"
           ],
           "directions": [
             "forward",
@@ -110,7 +108,7 @@
           "model": "ridge",
           "model_params": {},
           "metric": "srcc",
-          "max_features": 7,
+          "max_features": 5,
           "min_features": 1
         }
       },
@@ -150,9 +148,7 @@
       "features": {
         "pca_n": 5,
         "include": [
-          "nr",
-          "ref_vgg",
-          "ref_resnet"
+          "nr"
         ],
         "include_stats": false,
         "stats_columns": [],
@@ -249,11 +245,11 @@
         },
         "importance_figsize": [
           6,
-          10
+          8
         ],
         "shap_figsize": [
           8,
-          10
+          8
         ],
         "shap_kernel_fallback": true,
         "shap_kernel_background_samples": 32,

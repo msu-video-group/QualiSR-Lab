@@ -72,7 +72,7 @@ Unless an experiment explicitly varies a setting, configurations use:
 - median imputation fitted on training data only, before feature scaling;
 - `MinMaxScaler` fitted on training data only;
 - Random Forest, XGBoost, and CatBoost with baseline parameters;
-- Q-Align excluded from regressor inputs except in the broad-pool and dedicated Q-Align impact runs;
+- Q-Align excluded from regressor inputs except in the broad-pool, dedicated Q-Align impact runs and NR complementarity experiments;
 - grouping by source/GT identity for internal splits;
 - PCA dimension 5 and RLFN as the baseline FR reference;
 - all supported regression analyses and plots;
@@ -205,10 +205,11 @@ The three transfer runs copy the existing `datasets/train_*.json` protocol: trai
 
 ### NR-centered complementary families (`nr_combinations/`)
 
-The five configurations isolate what each reduced-reference family contributes when paired with the four principal NR metrics (MUSIQ, ARNIQA, UNIQUE, and PaQ-2-PiQ). All runs use the default grouped protocol, exclude Q-Align, and use PCA dimension 5, RLFN-FR metrics, bicubic pseudo-reference representations, and compact statistics where applicable.
+The six configurations isolate what each reduced-reference family contributes when paired with the five principal NR metrics (Q-Align, MUSIQ, ARNIQA, UNIQUE, and PaQ-2-PiQ). All runs use the default grouped protocol and use PCA dimension 5, RLFN-FR metrics, bicubic pseudo-reference representations, and compact statistics where applicable.
 
 | Configuration | Regressor inputs | Training and validation | Purpose |
 |---|---|---|---|
+| `nr.json` | All five NR metrics | Default grouped protocol | Fix the baseline combined NR correlations. |
 | `nr_rlfn_fr.json` | NR + six RLFN-based FR metrics | Default grouped protocol | Measure the complementarity of scalar NR and pseudo-reference FR cues. |
 | `nr_artifact_statistics.json` | NR + compact statistics | Default grouped protocol | Measure the contribution of compact spatial-artifact summaries. |
 | `nr_pseudo_gt_embeddings.json` | NR + bicubic pseudo-reference VGG/ResNet PCA-5 embeddings | Default grouped protocol | Measure whether reference representations complement NR metrics. |

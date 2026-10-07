@@ -60,7 +60,7 @@
     "config": {
       "seed": 42,
       "split_seed": 42,
-      "experiment_name": "nr_combinations/nr_all_complementary_features",
+      "experiment_name": "nr_combinations_qalign/nr_all_complementary_features",
       "scale_features": true,
       "imputation": {
         "enabled": true,
@@ -99,6 +99,7 @@
             "arniqa",
             "unique",
             "paq2piq",
+            "qalign",
             "lpips-vgg_rlfn",
             "ahiq_rlfn",
             "vgg_pca_000",
@@ -115,7 +116,7 @@
           "model": "ridge",
           "model_params": {},
           "metric": "srcc",
-          "max_features": 12,
+          "max_features": 13,
           "min_features": 1
         }
       },
@@ -126,6 +127,12 @@
             "label": "MUSIQ (NR)",
             "feature": "nr",
             "metric": "musiq",
+            "higher_is_better": true
+          },
+          {
+            "label": "Q-Align (NR)",
+            "feature": "nr",
+            "metric": "qalign",
             "higher_is_better": true
           },
           {
@@ -166,9 +173,7 @@
         "fr_refs": [
           "rlfn"
         ],
-        "exclude_columns": [
-          "qalign"
-        ],
+        "exclude_columns": [],
         "feature_files": {
           "nr": "{features_root}/nr.csv",
           "fr": "{features_root}/fr.csv",
