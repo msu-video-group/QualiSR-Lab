@@ -1,0 +1,5 @@
+backend,n_folds,min_features,median_features,max_features,inner_fits,seconds
+catboost,15,6,9.0,11,6249,9785.193308600225
+randomforest,15,4,9.0,10,6375,12993.861413391307
+ridge,15,6,8.0,10,6219,68.29153703618795
+xgb,15,5,9.0,11,6483,730.1719182999805

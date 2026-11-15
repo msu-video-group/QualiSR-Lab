@@ -1,0 +1,14 @@
+{
+  "status": "passed",
+  "outer_folds": 15,
+  "model_prediction_sets": 1005,
+  "checks": [
+    "source separation",
+    "exact transform fit IDs",
+    "inner partition separation",
+    "paired prediction coverage",
+    "unchanged targets",
+    "finite predictions",
+    "recomputed per-dataset MOS/BT metrics and sample/group counts"
+  ]
+}

@@ -1,0 +1,104 @@
+{
+  "path_base": "directory containing this index",
+  "protocol": "../qualisr/configs/paper.json",
+  "results": {
+    "grouped": [
+      {
+        "path": "results/grouped/metrics_summary.csv",
+        "sha256": "e3df3035f6dcbe1de58140a47442f9ad328815781e4bfaceeac8fe598d424aae"
+      },
+      {
+        "path": "results/grouped/result_verification.json",
+        "sha256": "3bc55d701df2f44a85732195728820db9f8db48accd6840866cbd042c7f9013a"
+      },
+      {
+        "path": "results/grouped/core-verified/summary.csv",
+        "sha256": "e277423811f555e7216b981e3040b2ee11efa349031f7b00fdda23d85aa9829c"
+      },
+      {
+        "path": "results/grouped/pca-verified/summary.csv",
+        "sha256": "6aeade3a4d33f5e8f16191f3fbb751b4292be6f850207273820ccd8bede72337"
+      },
+      {
+        "path": "results/grouped/direct_fr_common_hr.csv",
+        "sha256": "4c4e8f24ba7f2cce17561d13c9418eeda3dad8811887e73d01a594b124d181f8"
+      }
+    ],
+    "statistics": [
+      {
+        "path": "results/statistics/analysis-full/primary_tests.csv",
+        "sha256": "bcf62c99979a232d02ab68d4ae2160eba0049f9811391168ab2055d3d3287b1c"
+      },
+      {
+        "path": "results/statistics/analysis-full/transfer_summary.csv",
+        "sha256": "abe315a1e479ba50053512eb1584b7185cfbdcabcc6b2f47ad13d2c2de1e393c"
+      },
+      {
+        "path": "results/statistics/analysis-full/model_seed_summary.csv",
+        "sha256": "6d2537c8f892b194748ef9047247eadc4e27a3412ee911f3a4173799f19bae2e"
+      },
+      {
+        "path": "results/statistics/analysis-full/ordinary_common.csv",
+        "sha256": "f33f18ab44416209416132211d9cbaacb4e067c74e10683ab6809db31298d047"
+      },
+      {
+        "path": "results/statistics/cost-analysis/front_all_backends.csv",
+        "sha256": "6906e5e7f2a38c633a1b3c9fc8fa6f10edbcc1f96a4c98743d1cc6bbd189b02c"
+      },
+      {
+        "path": "results/statistics/direct_and_fitted_correlations.csv",
+        "sha256": "f4ea22f00bfd5b0c562bcbb01291ff9d77d5fccd946051c14ee1d58269a4702b"
+      }
+    ],
+    "nr_transfer": [
+      {
+        "path": "results/nr_transfer/cpu_transfer_summary.csv",
+        "sha256": "184977c5b38df98a2c49e28d1b7355ae5e4e1b9dca5a858825959f1c8ba01c4d"
+      }
+    ],
+    "ref_gain": [
+      {
+        "path": "results/ref_gain/selection-full2/within_source_summary.csv",
+        "sha256": "2a0513aef20e13a94346d6071de7a9c1429224fc1c1214256ecc57ca5ac2a582"
+      },
+      {
+        "path": "results/ref_gain/geometry-sensitivity/summary.csv",
+        "sha256": "dce6048cab21e050b145d6a0b5c9566d3e4e5f319534cd39fb73700e2cb467b3"
+      },
+      {
+        "path": "results/ref_gain/latency-full/latency_summary.csv",
+        "sha256": "149d25c278ea465233bf63736bed082074e43a5d32bfd08f912240ce15cc1483"
+      },
+      {
+        "path": "results/ref_gain/selection-full2/pooled_correlations.csv",
+        "sha256": "8803f434950dc00c50b8b8d182ef776fce994c49ddf3da5045bfadee707b9c3b"
+      },
+      {
+        "path": "results/ref_gain/paired_latency.csv",
+        "sha256": "387b142396b30e45470e5323df9f6befd7abdd608924b55a40832a03a443d99e"
+      }
+    ],
+    "compact": [
+      {
+        "path": "results/compact/summary/sizes.csv",
+        "sha256": "b85b2171ba3220b8e9c65d4d43127bf797824d4fa9f242a927538e8eb650f696"
+      },
+      {
+        "path": "results/compact/summary/families.csv",
+        "sha256": "71fc980b5d33f65c835aa5a151073aa3ebf6d87b265c5fe3b2f4b7fa08b6efe8"
+      },
+      {
+        "path": "results/compact/summary/overlap_summary.csv",
+        "sha256": "1de7fcc2f88640adeb1bdd8ead70142137f3482931a30f2f658c00eb2300965a"
+      },
+      {
+        "path": "results/compact/summary/performance.csv",
+        "sha256": "5a7927daa79e09bb857bbee9980e1ea1ca52016fdd8b9d53cdbd95d43667a2cc"
+      },
+      {
+        "path": "results/compact/summary/features.csv",
+        "sha256": "10205900f2ab333b3d924c5d2745f874069e4820ad469bbeeb2802ca214feeba"
+      }
+    ]
+  }
+}
