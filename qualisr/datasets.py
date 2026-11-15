@@ -609,7 +609,7 @@ def parse_dsr_dataset(
                 if not os.path.isdir(directory):
                     raise FileNotFoundError(
                         f"DSR full {label} scale directory not found: {directory}. "
-                        "Run scripts/split_dsr_full_scales.py first."
+                        "Prepare lr_x2, lr_x4, sr_x2 and sr_x4 as described in dataset/readme.md."
                     )
         lr_indexes[scale] = ImageIndex(
             lr_root,

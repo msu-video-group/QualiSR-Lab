@@ -1,5 +1,5 @@
 <div align=center class="logo">
-      <img src="https://raw.githubusercontent.com/sangwyn/QualiSR-Lab/main/logo.png" style="width:640px">
+      <img src="https://raw.githubusercontent.com/msu-video-group/QualiSR-Lab/main/logo.png" style="width:640px">
 </div>
 
 # QualiSR-Lab: Reduced-Reference IQA for SR
@@ -31,7 +31,7 @@ The proposed pipeline is:
 
 The sections below describe the required data format and the workflow.
 
-![Pipeline overview](https://raw.githubusercontent.com/sangwyn/QualiSR-Lab/main/pipeline.png)
+![Pipeline overview](https://raw.githubusercontent.com/msu-video-group/QualiSR-Lab/main/pipeline.png)
 
 ---
 
@@ -52,34 +52,30 @@ For image feature extraction, install the additional dependencies:
 python -m pip install -c requirements.txt -e ".[features,regressors]"
 ```
 
-The [PyPI package](https://pypi.org/project/qualisr-lab/) is also available:
+For the latest published version on [PyPI](https://pypi.org/project/qualisr-lab/):
 
 ```bash
-python -m pip install "qualisr-lab[features,regressors]==0.2.0"
+python -m pip install "qualisr-lab[features,regressors]"
 ```
 
 The Docker image includes regression dependencies and runs the bundled example without plots:
 
 ```bash
-docker build -t qualisr-lab:0.2.0 .
+docker build -t qualisr-lab:0.3.0 .
 mkdir -p plots
-docker run --rm --mount type=bind,source="${PWD}/plots",target=/app/plots qualisr-lab:0.2.0
+docker run --rm --mount type=bind,source="${PWD}/plots",target=/app/plots qualisr-lab:0.3.0
 ```
 
 Create the local `plots/` directory first if needed. The mount preserves results after the container exits. For an interactive shell, append `bash` and add `-it` to `docker run`.
 
-Docker applies `requirements.txt` as constraints, including transitive dependencies.
-To build the complete pinned Linux/CUDA environment instead, use
-`docker build --build-arg QUALISR_EXTRAS=all -t qualisr-lab:0.2.0-all .`.
-The full environment is large and includes NVIDIA libraries; GPU execution also requires
-the container runtime's GPU support.
+Docker applies `requirements.txt` as constraints, including transitive dependencies. To build the complete pinned Linux/CUDA environment instead, use `docker build --build-arg QUALISR_EXTRAS=all -t qualisr-lab:0.3.0-all .`. The full environment is large and includes NVIDIA libraries; GPU execution also requires the container runtime's GPU support.
 
 For the complete pinned environment locally, including notebook and development dependencies:
 
 ```bash
 python -m pip install -r requirements.txt -e .
 # Alternatively, from PyPI:
-python -m pip install "qualisr-lab[all]==0.2.0"
+python -m pip install "qualisr-lab[all]"
 # Or with Conda from the repository root:
 conda env create -f environment.yml
 ```
@@ -89,19 +85,15 @@ pytest and Ruff. LightGBM and the separate `shap` package are optional integrati
 outside the pinned environment; install them separately if needed. XGBoost's native
 SHAP computation remains available with the `regressors` extra.
 
-The wheel includes the current pipeline config, experiment JSONs, and the five CSVs
-used by the bundled example. Experiment configs still require their external datasets
-and locally configured paths. Release preparation is documented in [RELEASE.md](https://github.com/sangwyn/QualiSR-Lab/blob/main/RELEASE.md).
-
-See [dataset/readme.md](https://github.com/sangwyn/QualiSR-Lab/blob/main/dataset/readme.md) for dataset download notes and the parser/sample interface for custom datasets.
+See [dataset/readme.md](https://github.com/msu-video-group/QualiSR-Lab/blob/main/dataset/readme.md) for dataset download notes and the parser/sample interface for custom datasets.
 
 ---
 
 ## Run with image datasets
 
-Download [QualiSR-Set120](https://github.com/sangwyn/QualiSR-Lab/blob/main/dataset/readme.md#download), then run commands from the repository root. The unified runner loads the configured datasets once and uses consistent sample IDs across feature extraction, artifact statistics, and regression.
+Download [QualiSR-Set120](https://github.com/msu-video-group/QualiSR-Lab/blob/main/dataset/readme.md#download), then run commands from the repository root. The unified runner loads the configured datasets once and uses consistent sample IDs across feature extraction, artifact statistics, and regression.
 
-Before running the full pipeline, edit [`configs/pipeline.json`](https://github.com/sangwyn/QualiSR-Lab/blob/main/configs/pipeline.json):
+Before running the full pipeline, edit [`configs/pipeline.json`](https://github.com/msu-video-group/QualiSR-Lab/blob/main/configs/pipeline.json):
 
 - Set each dataset's `root` and `features_root`.
 - Select the feature groups and metrics needed for the experiment. Reference embeddings, generic timm embeddings, and embedding differences are disabled by default.
@@ -121,7 +113,7 @@ qualisr-run-pipeline --config configs/pipeline.json --only-section pca statistic
 qualisr-run-regressors --config configs/pipeline.json
 ```
 
-An explicit dataset configuration requires the LR/SR image files. Omit `--config` for the image-free bundled example. For custom parsers, dataset roles, and path rules, see the [dataset guide](https://github.com/sangwyn/QualiSR-Lab/blob/main/dataset/readme.md). For ablations, transfer studies, and grouped cross-validation, see the [experiment suite](https://github.com/sangwyn/QualiSR-Lab/blob/main/configs/experiments/readme.md).
+An explicit dataset configuration requires the LR/SR image files. Omit `--config` for the image-free bundled example. For custom parsers, dataset roles, and path rules, see the [dataset guide](https://github.com/msu-video-group/QualiSR-Lab/blob/main/dataset/readme.md). For feature-family comparisons, transfer and grouped evaluation, see the [paper experiment guide](https://github.com/msu-video-group/QualiSR-Lab/blob/main/experiments/README.md).
 
 ---
 
@@ -150,37 +142,56 @@ run_pipeline(
 
 ---
 
-## Full Reproducibility Run
+## Reproduce the QualiSR-Set120 example
 
-To download the dataset and run feature extraction, PCA, artifact statistics, and regressor analysis end to end:
-
-```bash
-python -m pip install -r requirements.txt -e .
-qualisr-run-pipeline --config configs/pipeline.json
-```
-
-You can also use BASH script:
+From the checkout with the regression dependencies installed:
 
 ```bash
-bash reproduce_pipeline.sh
+bash reproduce_pipeline.sh cached --no-plots
 ```
 
-The script writes feature-group CSVs such as `features/fr.csv`, `features/nr.csv`, and `features/vgg.csv`, PCA outputs to `features/pca/`, and plots/results to `plots/`.
+Running the script without arguments also uses the precomputed QualiSR-Set120 features. The default output is `reproduction/cached/baseline@pca5/`. Pass `--plots-root` or set `PLOTS_DIR` to choose a fresh destination. This single grouped holdout uses the released QualiSR-Set120 labels and the five small CSVs bundled in the wheel.
+
+To download the image dataset, or to recompute features from images:
+
+```bash
+bash reproduce_pipeline.sh download
+python -m pip install -c requirements.txt -e ".[features,regressors]"
+PLOTS_DIR=/path/to/new/qualisr-set120-run bash reproduce_pipeline.sh images
+```
+
+Both modes reuse an existing dataset. The default download is the paper's Hugging Face snapshot. Set `DATASET_DIR` for another destination. Use `DATASET_SOURCE=gdrive` with `gdown` and `unzip` installed, or set `DATASET_ARCHIVE=/path/to/QualiSR-Set120.zip` for a local archive. Use `DATASET_SOURCE=skip` for an existing image tree. The image workflow uses the released references and heatmaps. Set `RUN_REFERENCE=1` to generate references with the repository inference scripts. `DEVICE`, `FEATURE_GROUPS`, `PCA_COMPONENTS`, `FEATURES_DIR`, `PROFILE`, `PROFILE_FLOPS`, and `SAVE_SVG` select image-run settings. The recorded configuration and, by default, newly computed features are under `PLOTS_DIR`. Use a fresh directory for each run.
+
+The `images` workflow launches references, feature extraction, PCA, embedding differences, artifact statistics, and regression as separate commands, in that order. All stages use the recorded `reproduce_pipeline_config.json` and respect its enabled sections. To rerun one stage, pass that config to `qualisr-run-pipeline --config /path/to/run/reproduce_pipeline_config.json --only-section pca` (replace `pca` with the required section).
+
+For a grouped QualiSR-Set120 experiment with the eight raw feature CSVs in the checkout, use the following command. It downloads or reuses the images for the source identity audit and fits PCA from the training rows. This example evaluates two fixed feature pools on one fold. Omit the model, fold and preset filters to run the full grouped matrix on QualiSR-Set120 alone.
+
+```bash
+bash reproduce_pipeline.sh set120 --output /path/to/new/qualisr-set120-fold \
+  --split-seeds 42 --fold-limit 1 --models randomforest \
+  --experiments nr,nr_ref --skip-tuning --skip-selection
+```
+
+To run the grouped comparisons on all four datasets, point `QUALISR_DATA_ROOT`
+at the prepared images and feature CSVs. The `evaluation` section of
+`configs/paper.json` sets the folds, seeds, regressors and PCA dimensions.
+The [experiment guide](https://github.com/msu-video-group/QualiSR-Lab/blob/main/experiments/README.md) lists the required inputs and follow-on analyses.
+
+```bash
+QUALISR_DATA_ROOT=/path/to/datasets/iqa bash reproduce_pipeline.sh paper --output /path/to/new/grouped
+```
 
 ---
 
 ## Workflow
 
-You may either launch the whole pipeline in a single command with your JSON config as in the previous section or do each step separately. The unified pipeline parses the configured `datasets` entries into one shared sample list; datasets may use a bundled parser, a parser function from a user Python file, or explicit labels/image directories. Multiple entries are combined in one run. See [dataset/readme.md](https://github.com/sangwyn/QualiSR-Lab/blob/main/dataset/readme.md) for the complete contract.
+You may either launch the whole pipeline in a single command with your JSON config as in the previous section or do each step separately. The unified pipeline parses the configured `datasets` entries into one shared sample list; datasets may use a bundled parser, a parser function from a user Python file, or explicit labels/image directories. Multiple entries are combined in one run. See [dataset/readme.md](https://github.com/msu-video-group/QualiSR-Lab/blob/main/dataset/readme.md) for the complete contract.
 
 The standalone commands below retain their directory-based arguments for focused use outside the unified pipeline.
 
 ### Step 0 (optional): Prepare reference images
 
-Produce [RLFN](https://github.com/bytedance/RLFN) / [SPAN](https://github.com/zononhzy/SPAN) / bicubic images for LR + SR pairs (used to compute FR metrics).
-The bundled `realtime_sr/` directory is a clone-only convenience asset; pip
-installs do not include these scripts/checkpoints, so pass your own paths for
-RLFN/SPAN when running outside the repository.
+Produce [RLFN](https://github.com/bytedance/RLFN) / [SPAN](https://github.com/zononhzy/SPAN) / bicubic images for LR + SR pairs (used to compute FR metrics). The bundled `realtime_sr/` directory is a clone-only convenience asset; pip installs do not include these scripts/checkpoints, so pass your own paths for RLFN/SPAN when running outside the repository.
 
 ```bash
 qualisr-make-reference \
@@ -198,10 +209,9 @@ qualisr-make-reference \
 
 ### Step 1: Compute image features
 
-Compute FR / NR / [VGG](https://arxiv.org/abs/1409.1556) / [ResNet](https://arxiv.org/abs/1512.03385) / [SigLIP](https://arxiv.org/abs/2303.15343) features for SR images and save them into a single CSV file. VGG, ResNet, and timm embeddings can also be extracted from one configured SR-resolution reference type.
+Compute FR / NR / [VGG](https://arxiv.org/abs/1409.1556) / [ResNet](https://arxiv.org/abs/1512.03385) / SigLIP2 features for SR images and save them into a single CSV file. VGG, ResNet, and timm embeddings can also be extracted from one configured SR-resolution reference type.
 
-SR methods are passed as `METHOD=DIR`.  
-Reference image filenames are expected in the format:
+SR methods are passed as `METHOD=DIR`. Reference image filenames are expected in the format:
 
 ```text
 <sr_stem>@<sr_method>@<ref_name>.<ext>
@@ -218,9 +228,7 @@ qualisr-extract-features \
   --device cuda
 ```
 
-To extract the corresponding embeddings from one reference type, select it with
-`--embedding-reference` and use the `ref-vgg`, `ref-resnet`, or `ref-timm`
-feature names. For example:
+To extract the corresponding embeddings from one reference type, select it with `--embedding-reference` and use the `ref-vgg`, `ref-resnet`, or `ref-timm` feature names. For example:
 
 ```bash
 qualisr-extract-features \
@@ -232,9 +240,7 @@ qualisr-extract-features \
   --device cuda
 ```
 
-In the unified pipeline, configure the reference once as
-`features.common.embedding_reference`. All enabled reference-embedding groups
-use that same reference.
+In the unified pipeline, configure the reference once as `features.common.embedding_reference`. All enabled reference-embedding groups use that same reference.
 
 ### Step 2: Apply PCA to high-dimensional features
 
@@ -250,9 +256,7 @@ qualisr-apply-pca \
   --output-dir features/pca
 ```
 
-For component-wise differences after PCA, independently fitted PCA coordinates
-are not comparable. Use paired mode to fit one basis on the stacked SR and
-reference training rows and transform both inputs:
+For component-wise differences after PCA, independently fitted PCA coordinates are not comparable. Use paired mode to fit one basis on the stacked SR and reference training rows and transform both inputs:
 
 ```bash
 qualisr-apply-pca \
@@ -268,8 +272,7 @@ qualisr-apply-pca \
 
 ### Step 3 (optional): Compute embedding differences
 
-Compute signed, element-wise `SR - reference` differences. Rows are matched by
-`sample_id`, and block mappings explicitly identify the corresponding columns:
+Compute signed, element-wise `SR - reference` differences. Rows are matched by `sample_id`, and block mappings explicitly identify the corresponding columns:
 
 ```bash
 qualisr-embedding-difference \
@@ -279,13 +282,11 @@ qualisr-embedding-difference \
   --output features/vgg_diff_pca5.csv
 ```
 
-The same command can operate on raw embeddings, for example with
-`--blocks vgg_diff=ref_vgg_,vgg_`.
+The same command can operate on raw embeddings, for example with `--blocks vgg_diff=ref_vgg_,vgg_`.
 
 ### Step 4: Compute artifact-mask statistics
 
-Compute summary statistics for heatmaps stored as `.npy`, `.npy.gz`, or compatible compressed files.  
-Input directories can be passed as `PREFIX=DIR` to ensure stable sample naming.
+Compute summary statistics for heatmaps stored as `.npy`, `.npy.gz`, or compatible compressed files. Input directories can be passed as `PREFIX=DIR` to ensure stable sample naming.
 
 ```bash
 qualisr-compute-stats \
@@ -303,11 +304,9 @@ Train regressors and produce summary on feature importances and correlations. Th
 qualisr-run-regressors --config configs/pipeline.json
 ```
 
-Training and validation datasets, their split behavior, and their feature
-roots are declared once in the top-level `datasets` list. See
-[dataset/readme.md](https://github.com/sangwyn/QualiSR-Lab/blob/main/dataset/readme.md#selecting-datasets).
+Training and validation datasets, their split behavior, and their feature roots are declared once in the top-level `datasets` list. See [dataset/readme.md](https://github.com/msu-video-group/QualiSR-Lab/blob/main/dataset/readme.md#selecting-datasets).
 
-You can also use [regressors.ipynb](regressors.ipynb) notebook for experimentsn; install `.[regressors,notebook]` to use it. It trains regressors, evaluates them, and visualizes:
+You can also use [regressors.ipynb](https://github.com/msu-video-group/QualiSR-Lab/blob/main/regressors.ipynb) notebook for experiments; install `.[regressors,notebook]` to use it. It trains regressors, evaluates them, and visualizes:
 
 - feature importances,
 - PLCC/SRCC correlations,
@@ -319,8 +318,8 @@ The first notebook cell describes the workflow for running experiments individua
 
 Example outputs:
 
-![Feature importances](https://raw.githubusercontent.com/sangwyn/QualiSR-Lab/main/plots/example@pca5/importances/all_models_importances.png)
-![Correlations](https://raw.githubusercontent.com/sangwyn/QualiSR-Lab/main/plots/example@pca5/correlations/correlations.png)
+![Feature importances](https://raw.githubusercontent.com/msu-video-group/QualiSR-Lab/main/plots/example@pca5/importances/all_models_importances.png)
+![Correlations](https://raw.githubusercontent.com/msu-video-group/QualiSR-Lab/main/plots/example@pca5/correlations/correlations.png)
 
 ### Profiling
 
@@ -332,7 +331,7 @@ For regression, `--profile` writes runtime and prediction-cost estimates under t
 
 ## Feature Types
 
-This section summarizes the feature groups used in the pipeline. For references and guidelines to adding custom features, address [features/readme.md](https://github.com/sangwyn/QualiSR-Lab/blob/main/features/readme.md).
+This section summarizes the feature groups used in the pipeline. For references and guidelines to adding custom features, address [features/readme.md](https://github.com/msu-video-group/QualiSR-Lab/blob/main/features/readme.md).
 
 ### No-Reference (NR) metrics
 
@@ -383,7 +382,7 @@ This project uses features extracted from:
 
 - [VGG](https://arxiv.org/abs/1409.1556)
 - [ResNet](https://arxiv.org/abs/1512.03385)
-- [SigLIP](https://arxiv.org/abs/2303.15343)
+- SigLIP2 supplies three LR/SR similarity scores
 - any encoders from [timm](https://github.com/huggingface/pytorch-image-models)
 
 Because these embeddings are often high-dimensional, Principal Component Analysis (PCA) can be applied before training regressors.
@@ -411,4 +410,4 @@ The project extracts the following summary statistics from artifact masks:
 
 ## License
 
-Project code is released under the [BSD-3-Clause license](https://github.com/sangwyn/QualiSR-Lab/blob/main/LICENSE). Third-party code, checkpoints, and datasets have separate terms; see [third-party notices](https://github.com/sangwyn/QualiSR-Lab/blob/main/THIRD_PARTY_NOTICES.md) and the [dataset guide](https://github.com/sangwyn/QualiSR-Lab/blob/main/dataset/readme.md#license).
+Project code is released under the [BSD-3-Clause license](https://github.com/msu-video-group/QualiSR-Lab/blob/main/LICENSE). Third-party code, checkpoints, and datasets have separate terms; see [third-party notices](https://github.com/msu-video-group/QualiSR-Lab/blob/main/THIRD_PARTY_NOTICES.md) and the [dataset guide](https://github.com/msu-video-group/QualiSR-Lab/blob/main/dataset/readme.md#license).

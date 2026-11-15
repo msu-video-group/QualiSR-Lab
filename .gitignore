@@ -187,11 +187,14 @@ legacy_compute_statistics.py
 filter.py
 grounding_dataset.zip
 
-dataset/heatmaps
-dataset/hr
-dataset/lr
-dataset/ref
-dataset/sr
+/dataset/*
+!/dataset/labels.csv
+!/dataset/readme.md
 
 configs/test*
 *.egg-info/
+
+# Local reproduction outputs and alternate release drafts
+/reproduction/
+/vibe_README.md
+/RELEASE_VALIDATION.md

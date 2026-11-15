@@ -1,11 +1,20 @@
+"""Public commands, installation metadata and packaged resources."""
+
 from __future__ import annotations
 
 import csv
 import os
+import runpy
 import subprocess
 import sys
-from importlib import resources
+from importlib import metadata, resources
 from pathlib import Path
+
+from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
+from packaging.utils import canonicalize_name
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def run_cli(*args: str, tmp_path) -> subprocess.CompletedProcess[str]:
@@ -277,3 +286,79 @@ def test_regressor_main_runs_config_directory_in_order(tmp_path, monkeypatch) ->
     assert runs == [("a", False, []), ("z", False, [])]
     assert (tmp_path / "plots" / "a" / "log.txt").is_file()
     assert (tmp_path / "plots" / "z" / "log.txt").is_file()
+
+
+def test_packaged_resources_match_repository() -> None:
+    resource_pairs = runpy.run_path(str(ROOT / "scripts/sync_package_data.py"))["resource_pairs"]
+    package_root = resources.files("qualisr")
+    for source, target in resource_pairs(ROOT):
+        relative = target.relative_to(ROOT / "qualisr")
+        assert package_root.joinpath(*relative.parts).read_bytes() == source.read_bytes(), str(relative)
+
+
+def test_packaged_configs_have_no_removed_sources() -> None:
+    expected = {path.relative_to(ROOT / "configs") for path in (ROOT / "configs").rglob("*")
+                if path.is_file() and path.suffix in {".json", ".md"}}
+    actual = {path.relative_to(ROOT / "qualisr/configs") for path in (ROOT / "qualisr/configs").rglob("*")
+              if path.is_file() and path.suffix in {".json", ".md"}}
+    assert actual == expected
+
+
+def test_distribution_version_and_dependencies() -> None:
+    import tomllib
+
+    pins = {
+        canonicalize_name(requirement.name): str(requirement.specifier)
+        for line in (ROOT / "requirements.txt").read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+        for requirement in [Requirement(line)]
+    }
+    project = metadata.metadata("qualisr-lab")
+    assert project["Version"] == tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
+    python_versions = SpecifierSet(project["Requires-Python"])
+    assert python_versions == SpecifierSet(">=3.12,<3.14")
+    assert "3.12" in python_versions
+    assert "3.13" in python_versions
+    assert "3.14" not in python_versions
+    all_dependencies = set()
+    for line in project.get_all("Requires-Dist", []):
+        requirement = Requirement(line)
+        name = canonicalize_name(requirement.name)
+        assert str(requirement.specifier) == pins[name], line
+        if requirement.marker is None or requirement.marker.evaluate({"extra": "all"}):
+            all_dependencies.add(name)
+    assert all_dependencies == set(pins)
+
+
+def test_paper_assets_are_available_after_installation():
+    import csv
+    import hashlib
+    import json
+
+    experiments = resources.files("experiments")
+    flags = list(csv.DictReader(experiments.joinpath("inputs/set120_controls.csv").read_text().splitlines()))
+    assert len(flags) == 120
+    assert sum(row["is_control_item"] == "True" for row in flags) == 3
+    index = json.loads(experiments.joinpath("artifacts.json").read_text())
+    configs = resources.files("qualisr.configs")
+    assert experiments.joinpath(index["protocol"]).read_bytes() == configs.joinpath("paper.json").read_bytes()
+    for group in index["results"].values():
+        for item in group:
+            assert hashlib.sha256(experiments.joinpath(item["path"]).read_bytes()).hexdigest() == item["sha256"]
+    paper = json.loads(configs.joinpath("paper.json").read_text())
+    feature_config = json.loads(configs.joinpath("paper_features.json").read_text())
+    assert paper["datasets"] == feature_config["datasets"]
+    assert set(feature_config["features"]["groups"]) == {"fr", "nr", "vgg", "ref_vgg", "resnet", "ref_resnet", "siglip"}
+
+
+def test_installed_grouped_runner_reads_packaged_evaluation(monkeypatch, tmp_path):
+    from experiments import run_grouped
+
+    calls = []
+    monkeypatch.setattr(run_grouped, "run_grouped_experiments",
+                        lambda config, base, output, options: calls.append(config["evaluation"]))
+    entry, = metadata.distribution("qualisr-lab").entry_points.select(name="qualisr-run-experiments")
+    with resources.as_file(resources.files("qualisr.configs").joinpath("paper.json")) as config:
+        entry.load()(["--config", str(config), "--output", str(tmp_path), "--audit-only"])
+    settings, = calls
+    assert (settings["outer_folds"], settings["inner_folds"], settings["split_seeds"]) == (5, 3, [42, 43, 44])

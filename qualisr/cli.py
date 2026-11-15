@@ -13,6 +13,7 @@ SCRIPT_COMMANDS = {
     "embedding-difference": "qualisr.embedding_difference",
     "compute-stats": "qualisr.statistics",
     "run-pipeline": "qualisr.pipeline",
+    "run-experiments": "experiments.run_grouped",
 }
 
 

@@ -1,6 +1,6 @@
 # Image features
 
-Feature extraction is implemented in [`qualisr/features.py`](../qualisr/features.py). The [main README](../README.md#standalone-tools) contains command examples; use the unified pipeline to preserve dataset sample IDs across stages.
+Feature extraction is implemented in [`qualisr/features.py`](../qualisr/features.py). The [main README](../README.md#workflow) contains command examples; use the unified pipeline to preserve dataset sample IDs across stages.
 
 ## Configuring features
 
@@ -34,7 +34,7 @@ In `regressors.config.features`, register the file and enable its group alongsid
 }
 ```
 
-Use distinct feature names across files. The loader joins by `sample_id`, drops recognized metadata columns, and rejects duplicate or missing sample IDs. Missing numeric values follow the configured imputation policy. Precomputed PCA features must be fitted on the appropriate training partition; see the [experiment guide](../configs/experiments/README.md#pca-and-cross-validation).
+Use distinct feature names across files. The loader joins by `sample_id`, drops recognized metadata columns, and rejects duplicate or missing sample IDs. Missing numeric values follow the configured imputation policy. Precomputed PCA features must be fitted on the appropriate training partition; see the [experiment guide](../experiments/README.md#broad-feature-pool-pca-and-preprocessing-sensitivity).
 
 ## References
 
@@ -52,7 +52,7 @@ Use distinct feature names across files. The loader joins by `sample_id`, drops 
 | SSIM | [Image Quality Assessment: From Error Visibility to Structural Similarity](https://ece.uwaterloo.ca/~z70wang/publications/ssim.html) |
 | VGG | [Very Deep Convolutional Networks for Large-Scale Image Recognition](https://arxiv.org/abs/1409.1556) |
 | ResNet | [Deep Residual Learning for Image Recognition](https://arxiv.org/abs/1512.03385) |
-| SigLIP | [Sigmoid Loss for Language Image Pre-Training](https://arxiv.org/abs/2303.15343) |
+| SigLIP2 | [google/siglip2-base-patch16-256](https://huggingface.co/google/siglip2-base-patch16-256) |
 | timm | [PyTorch Image Models](https://github.com/huggingface/pytorch-image-models) |
 | SPAN | [Swift Parameter-free Attention Network for Efficient Super-Resolution](https://arxiv.org/abs/2311.12770) |
 | RLFN | [Residual Local Feature Network for Efficient Super-Resolution](https://arxiv.org/abs/2205.07514) |

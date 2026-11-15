@@ -1,0 +1,37 @@
+{
+  "datasets": [
+    {
+      "name": "QualiSR-Set120",
+      "root": "${QUALISR_DATA_ROOT}/QualiSR-Set120",
+      "features_root": "${QUALISR_DATA_ROOT}/QualiSR-Set120/features",
+      "regressors": {"train": true, "validate": true, "test_size": 0.2}
+    },
+    {
+      "name": "dsr-dataset",
+      "root": "${QUALISR_DATA_ROOT}/dsr_dataset",
+      "features_root": "${QUALISR_DATA_ROOT}/dsr_dataset/features",
+      "regressors": {"train": true, "validate": true, "test_size": 0.2}
+    },
+    {
+      "name": "isrgenqa",
+      "root": "${QUALISR_DATA_ROOT}/ISRGen-QA",
+      "features_root": "${QUALISR_DATA_ROOT}/ISRGen-QA/features",
+      "regressors": {"train": false, "validate": true}
+    },
+    {
+      "name": "realsrq",
+      "root": "${QUALISR_DATA_ROOT}/RealSRQ-KLTSRQA-released/RealSRQ",
+      "features_root": "${QUALISR_DATA_ROOT}/RealSRQ-KLTSRQA-released/RealSRQ/features",
+      "regressors": {"train": false, "validate": true}
+    }
+  ],
+  "evaluation": {
+    "outer_folds": 5,
+    "inner_folds": 3,
+    "split_seeds": [42, 43, 44],
+    "model_seed": 42,
+    "threads": 2,
+    "models": ["randomforest", "xgb", "catboost"],
+    "max_pca_dimensions": {"vgg": 10, "resnet": 50}
+  }
+}

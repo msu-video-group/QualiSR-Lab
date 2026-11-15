@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qualisr-lab"
-version = "0.2.0"
+version = "0.3.0"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 license = "BSD-3-Clause"
@@ -23,12 +23,13 @@ classifiers = [
   "Intended Audience :: Science/Research",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Scientific/Engineering :: Image Processing",
 ]
 
 [project.urls]
-Homepage = "https://github.com/sangwyn/QualiSR-Lab"
-Repository = "https://github.com/sangwyn/QualiSR-Lab"
+Homepage = "https://github.com/msu-video-group/QualiSR-Lab"
+Repository = "https://github.com/msu-video-group/QualiSR-Lab"
 
 [project.scripts]
 qualisr = "qualisr.cli:main"
@@ -39,11 +40,17 @@ qualisr-embedding-difference = "qualisr.cli:embedding_difference_main"
 qualisr-compute-stats = "qualisr.cli:compute_stats_main"
 qualisr-run-regressors = "qualisr.cli:run_regressors_main"
 qualisr-run-pipeline = "qualisr.cli:run_pipeline_main"
+qualisr-run-experiments = "experiments.run_grouped:main"
+
+[tool.setuptools]
+include-package-data = false
 
 [tool.setuptools.packages.find]
-include = ["qualisr*"]
+include = ["qualisr*", "experiments"]
+namespaces = false
 
 [tool.setuptools.package-data]
+experiments = ["README.md", "inputs/*.csv", "inputs/*.sha256", "artifacts.json", "results/**/*.csv", "results/**/*.json"]
 qualisr = [
   "configs/*.json",
   "configs/experiments/*.md",
