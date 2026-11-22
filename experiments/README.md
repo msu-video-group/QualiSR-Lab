@@ -104,7 +104,28 @@ done
 `core` evaluates All RR, family removals, scaler choices, ResNet-50, nested
 tuning, the ordinary-image cohort and matched true-HR oracle controls.
 `pca` tests 2, 5, 10, 25, 50, 75 and 96 SR components, limited by training rank.
+Add `--pca-representation ref` to repeat the sweep for the bicubic-reference
+VGG and ResNet embeddings. Each basis is fitted on that reference block alone,
+using the same outer training rows; use a separate output directory.
 `--prior` preserves partitions and input hashes; preprocessing is fitted per fold.
+
+For a focused comparison of paired VGG/ResNet dimensions, run:
+
+```bash
+python -m experiments.focused_pca --config configs/paper.json \
+  --prior "$out/grouped" --output "$out/focused-pca"
+```
+
+This compares (5,5), (5,50), (25,50), (50,50) and (96,96) for five NR + Ref
+and All RR without pseudo-FR scores, using fixed default heads for all three
+backends. A separate inner-selected row chooses dimensions by three grouped
+training-only folds. Shared paired PCA bases are fitted at 96 components within
+each training partition and reused through prefixes. The original VGG-10 /
+ResNet-50 basis supplies a separate 5/5 control. Outer models, transformations,
+inner predictions and original split/input provenance are retained. `--pilot`
+uses the first outer fold; `--workers` permits up to three two-thread model jobs.
+`--start-fold` retains original fold numbers while skipping completed outer
+folds, for scheduling remaining work with the same partitions.
 
 Use `python -m experiments.feature_diagnostics <subcommand> --help` for
 `inputs` (source/reference audit), `fr-methods` (direct FR and oracle comparisons)
@@ -144,6 +165,34 @@ All three backends share partitions and a three-candidate inner search.
 The five-NR pool (`qalign`) covers full-source transfer and the matched
 QualiSR-Set120/WASD factorial; the four-NR pool (`historical`) covers cohort and
 model-seed controls. The matrix command also verifies and summarizes each run.
+
+## Feature-pool transfer comparison
+
+The separate full-source transfer experiment compares five tuned pools (five NR,
+NR + Ref, NR + Ref + Diff, All RR without pseudo-FR scores, and the legacy pool)
+with an original three-setting/PCA-5 replay control. It preserves the original
+transfer runner. Each tuned pool has eight joint candidates per backend, selected
+only on the training datasets. Primary selection uses three grouped inner folds;
+a separate sensitivity equally weights grouped and leave-one-training-dataset-out
+scores. The latter equals grouped selection when only one dataset is trained.
+
+```bash
+python -m experiments.transfer_features fit --config configs/paper.json \
+  --pilot --workers 3 --output "$out/transfer-features-pilot"
+python -m experiments.transfer_features verify "$out/transfer-features-pilot"
+python -m experiments.transfer_features fit --config configs/paper.json \
+  --workers 3 --output "$out/transfer-features-full"
+python -m experiments.transfer_features verify "$out/transfer-features-full"
+```
+
+The pilot covers Set120-only and Set120 + ISRGen-QA training. The full run covers
+all seven MOS training combinations; RealSRQ is always evaluation-only. Keep all
+fixed-pool results and both selection protocols. The verifier reconstructs every
+inner score from binary forecasts, checks partition/fit IDs and candidate winners,
+and replays final serialized models. Use `verify --output NEW_DIRECTORY` for a
+separate local verification. Three workers use six model threads in total; select
+fewer workers on shared hosts when needed. Conditional uncertainty is separate
+from these one-refit-per-condition results.
 
 ## QualiSR-Set120-only NR adaptation
 

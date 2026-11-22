@@ -261,7 +261,8 @@ def plot_sweep(summary, output):
             ax = axes[row, col]
             for (family, model), part in summary.loc[summary.dataset.eq(dataset)].groupby(["experiment", "model"]):
                 series = part.assign(n=part.track.str.rsplit("_", n=1).str[-1].astype(int)).sort_values("n")
-                line, = ax.plot(series.n, series[f"{metric}_mean"], marker=".", label=f"{family[:-3]} · {model}")
+                label = family.replace("_", " ")
+                line, = ax.plot(series.n, series[f"{metric}_mean"], marker=".", label=f"{label} · {model}")
                 avg, sd = series[f"{metric}_mean"], series[f"{metric}_sd"]
                 ax.fill_between(series.n, avg - sd, avg + sd, alpha=0.1, color=line.get_color())
             for n in (5, 25, 50):

@@ -68,8 +68,8 @@ def joint_delta(left, right, prediction_columns):
     return (added - base).mean(axis=0), valid
 
 
-def paired_bt(data, label):
-    left_key, right_key = pair_keys(label.name)
+def paired_bt(data, label, *, keys=None, n_folds=15, n_reps=10000):
+    left_key, right_key = pair_keys(label.name) if keys is None else keys
     models = BACKENDS if label.model == "backend_mean" else (label.model,)
     aligned = []
     columns = [f"pred_{model}" for model in models]
@@ -87,7 +87,7 @@ def paired_bt(data, label):
     a, b = aligned
     pd.testing.assert_frame_equal(a[ID + META[1:]], b[ID + META[1:]])
     require(a.groupby("correlation_group").source_group.nunique().eq(1).all(), "Group straddles scenes")
-    require(a.groupby("sample_id").size().eq(15).all(), "Missing a repeated prediction")
+    require(a.groupby("sample_id").size().eq(n_folds).all(), "Missing a repeated prediction")
 
     collapsed = []
     for arm in (a, b):
@@ -98,10 +98,11 @@ def paired_bt(data, label):
     groups = collapsed[0].groupby("correlation_group").source_group.first()
     _, scenes = pd.factorize(groups, sort=True)
     index = scenes.get_indexer(groups[keep])
-    draws = scene_draws(BT, len(scenes), 10000)[:, index]
+    require(keep.any(), "No jointly defined BT comparison group")
+    draws = scene_draws(BT, len(scenes), n_reps)[:, index]
     count = draws.sum(axis=1, keepdims=True)
     reps = np.divide(draws @ effects, count, out=np.full((len(draws), 2), np.nan), where=count > 0)
-    require(np.isfinite(reps).all(axis=1).sum() >= 9900, "Insufficient valid BT replicates")
+    require(np.isfinite(reps).all(axis=1).sum() >= 0.99 * n_reps, "Insufficient valid BT replicates")
     point = effects.mean(axis=0)
     ci = np.nanquantile(reps, [0.025, 0.975], axis=0)
 

@@ -79,6 +79,7 @@ def run(args):
     write_json(output / "run.json", {
         "config": config, "prior": str(args.prior), "pilot": args.pilot, "stage": args.stage,
         "variants": variants, "controls": sorted(controls), "pca_grid": PCA_GRID,
+        "pca_representation": args.pca_representation,
         "tuning": {name: search_candidates(name, True) for name in models},
     })
 
@@ -105,7 +106,8 @@ def run(args):
             train_y = raw.loc[train_x.index, "score"]
             model = Ridge(alpha=1.0) if name == "ridge" else make_model(name, params or {}, seed, threads)
             model.fit(train_x, train_y)
-            prediction = model.predict(eval_x)
+            prediction = (model.predict(eval_x, thread_count=threads) if name == "catboost"
+                          else model.predict(eval_x))
             if not np.isfinite(prediction).all():
                 raise ValueError("Nonfinite prediction")
             key = {"split_seed": split_seed, "fold": fold, "experiment": experiment, "model": name, "track": track}
@@ -120,7 +122,9 @@ def run(args):
 
         record_fit(train, "released")
         if args.stage == "pca":
-            for family, (columns, _) in blocks.items():
+            representation = args.pca_representation
+            for family, paired_columns in blocks.items():
+                columns = paired_columns[0 if representation == "sr" else 1]
                 rank_bound = min(len(train) - 1, len(columns))
                 maximum = min(max(PCA_GRID), rank_bound)
                 pca = PCA(n_components=maximum, svd_solver="randomized", random_state=seed).fit(
@@ -131,7 +135,7 @@ def run(args):
                 append(pd.DataFrame([{"family": family, "split_seed": split_seed, "fold": fold,
                                      "rank_bound": rank_bound, "numerical_rank_within_basis": rank}]),
                        output / "pca_rank.csv")
-                columns_out = [f"{family}_sr_{i:03d}" for i in range(maximum)]
+                columns_out = [f"{family}_{representation}_{i:03d}" for i in range(maximum)]
                 train_z = pca.transform(raw.loc[train, columns])
                 scaler = MinMaxScaler().fit(train_z)
                 tx = pd.DataFrame(scaler.transform(train_z), index=train, columns=columns_out)
@@ -141,7 +145,7 @@ def run(args):
                 for count in grid:
                     if count <= rank:
                         for name in models:
-                            evaluate_fit(f"{family}_sr", name, f"pca_{count}", tx.iloc[:, :count],
+                            evaluate_fit(f"{family}_{representation}", name, f"pca_{count}", tx.iloc[:, :count],
                                          vx.iloc[:, :count], n_components=count)
         else:
             def prepare(ids, transform_ids, columns=scalars, scaler="minmax"):
@@ -208,6 +212,8 @@ if __name__ == "__main__":
     for name in ("config", "prior", "control-flags", "output"):
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--stage", choices=("core", "pca"), required=True)
+    parser.add_argument("--pca-representation", choices=("sr", "ref"), default="sr",
+                        help="Embedding block fitted and evaluated by the PCA-only sweep (default: sr)")
     parser.add_argument("--pilot", action="store_true")
     with threadpool_limits(limits=2):
         run(parser.parse_args())
