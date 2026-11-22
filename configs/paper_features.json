@@ -1,0 +1,121 @@
+{
+  "datasets": [
+    {
+      "name": "QualiSR-Set120",
+      "root": "${QUALISR_DATA_ROOT}/QualiSR-Set120",
+      "features_root": "${QUALISR_DATA_ROOT}/QualiSR-Set120/features",
+      "regressors": {
+        "train": true,
+        "validate": true,
+        "test_size": 0.2
+      }
+    },
+    {
+      "name": "dsr-dataset",
+      "root": "${QUALISR_DATA_ROOT}/dsr_dataset",
+      "features_root": "${QUALISR_DATA_ROOT}/dsr_dataset/features",
+      "regressors": {
+        "train": true,
+        "validate": true,
+        "test_size": 0.2
+      }
+    },
+    {
+      "name": "isrgenqa",
+      "root": "${QUALISR_DATA_ROOT}/ISRGen-QA",
+      "features_root": "${QUALISR_DATA_ROOT}/ISRGen-QA/features",
+      "regressors": {
+        "train": false,
+        "validate": true
+      }
+    },
+    {
+      "name": "realsrq",
+      "root": "${QUALISR_DATA_ROOT}/RealSRQ-KLTSRQA-released/RealSRQ",
+      "features_root": "${QUALISR_DATA_ROOT}/RealSRQ-KLTSRQA-released/RealSRQ/features",
+      "regressors": {
+        "train": false,
+        "validate": true
+      }
+    }
+  ],
+  "features": {
+    "enabled": true,
+    "common": {
+      "device": "auto",
+      "embedding_reference": "bicubic",
+      "nr_metrics": [
+        "musiq",
+        "arniqa",
+        "qalign",
+        "unique",
+        "paq2piq"
+      ],
+      "fr_metrics": [
+        "psnr",
+        "ssim",
+        "lpips-vgg",
+        "stlpips-vgg",
+        "pieapp",
+        "ahiq"
+      ]
+    },
+    "groups": {
+      "nr": {
+        "features": [
+          "nr"
+        ],
+        "output": "{features_root}/nr.csv"
+      },
+      "fr": {
+        "features": [
+          "fr"
+        ],
+        "output": "{features_root}/fr.csv"
+      },
+      "vgg": {
+        "features": [
+          "vgg"
+        ],
+        "output": "{features_root}/vgg.csv"
+      },
+      "ref_vgg": {
+        "features": [
+          "ref-vgg"
+        ],
+        "output": "{features_root}/ref_vgg.csv"
+      },
+      "resnet": {
+        "features": [
+          "resnet"
+        ],
+        "output": "{features_root}/resnet.csv"
+      },
+      "ref_resnet": {
+        "features": [
+          "ref-resnet"
+        ],
+        "output": "{features_root}/ref_resnet.csv"
+      },
+      "siglip": {
+        "features": [
+          "siglip"
+        ],
+        "output": "{features_root}/siglip.csv"
+      }
+    }
+  },
+  "statistics": {
+    "enabled": true,
+    "output": "{features_root}/stats.csv",
+    "percentiles": [
+      5,
+      95
+    ],
+    "area_thresholds": [
+      0,
+      0.5,
+      0.75
+    ]
+  }
+}

@@ -15,10 +15,9 @@ __pycache__
 .ruff_cache
 catboost_info
 plots
-dataset/hr
-dataset/lr
-dataset/sr
-dataset/ref
-dataset/heatmaps
+dataset/*
+!dataset/labels.csv
+!dataset/readme.md
 *.zip
 vibe_README.md
+reproduction

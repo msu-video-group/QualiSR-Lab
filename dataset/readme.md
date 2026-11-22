@@ -11,10 +11,10 @@ The source pool is [SR-Ground](https://huggingface.co/datasets/Divotion/SR-Groun
 From the repository root, download the images from [Hugging Face](https://huggingface.co/datasets/onryabinin/QualiSR-Set120):
 
 ```bash
-hf download onryabinin/QualiSR-Set120 --repo-type dataset --local-dir dataset
+bash reproduce_pipeline.sh download
 ```
 
-Alternatively, download the [Google Drive archive](https://drive.google.com/file/d/1NeGiwWQECTZMxVhJ5ZALxQ5nzRYkz4-E/view):
+The script pins the paper snapshot and uses the `hf` CLI installed with the package. It preserves the checkout's labels and dataset guide. The snapshot leaves 40 Real-ESRGAN image-path cells blank. Its method names, source names and MOS values match the checkout, and the Set120 parser resolves the same 120 sample IDs from either file. ZIP extraction uses `unzip`, and local TAR extraction uses GNU tar. Alternatively, download the [Google Drive archive](https://drive.google.com/file/d/1NeGiwWQECTZMxVhJ5ZALxQ5nzRYkz4-E/view):
 
 ```bash
 python -m pip install gdown
@@ -23,6 +23,26 @@ unzip grounding_dataset.zip -d dataset/
 ```
 
 The repository includes labels and precomputed features. Image files are required for dataset-configured runs; only the default packaged regression example bypasses image loading.
+
+## Paper dataset snapshots and parser inputs
+
+Point `QUALISR_DATA_ROOT` at the parent of these four directories. Keep the names
+in the `datasets` list when computing features. Each row in a feature CSV must
+use the parser's `sample_id`.
+
+| Directory below the root | Required layout and recorded source |
+| --- | --- |
+| `QualiSR-Set120/` | The layout below. [Set120 snapshot](https://huggingface.co/datasets/onryabinin/QualiSR-Set120/tree/dbe874b8167610e43cf121d6e2d47aaafd115217) |
+| `dsr_dataset/` | Diffusion subset, 10,000 outputs. Put labels in `scores/mos.csv` (`img_name`, `mos`), sources in `hr/`, and inputs/outputs in `lr_x2/`, `lr_x4/`, `sr_x2/`, `sr_x4/`. Preserve the filenames including their terminal scale suffix. [DISRQAD snapshot](https://huggingface.co/datasets/visualprior/DISRQAD/tree/addd505574c9cc3d34d2ac1cce45678edc6dc58e) |
+| `ISRGen-QA/` | `LR/`, `HR/`, `SR/`, `combined_labels.txt`. Use the complete 720-output population. [ISRGen-QA release instructions](https://github.com/Lighting-YXLI/ISRGen-QA/tree/88e9046a413149ae2a569bcb88af9f4a6c9db232) |
+| `RealSRQ-KLTSRQA-released/RealSRQ/` | Preserve the publisher's scene/scale SR and HR/LR directory structure and `subj_BT_score.mat`. [RealSRQ release instructions](https://github.com/Zhentao-Liu/RealSRQ-KLTSRQA/tree/44f69602771628371f7a048e4d2b0c31519fcd72) |
+
+Set120 labels store raw MOS divided by 10. Image-configured runs apply the
+Set120 parser's additional min–max normalization before splitting. The
+image-free example reads the released scores directly. The paper evaluates
+MOS separately by dataset and averages RealSRQ correlations within its defined
+scene/scale groups. See the [paper experiment guide](../experiments/README.md)
+for cache names and how to prepare each run.
 
 ## Layout
 

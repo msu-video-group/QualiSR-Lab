@@ -1,338 +1,259 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Reproduce the full QualiSR-Lab pipeline from a clean checkout.
-#
-# Common overrides:
-#   DATASET_SOURCE=hf|gdrive|archive|skip
-#   DATASET_ARCHIVE=/path/to/grounding_dataset.zip
-#   DEVICE=cpu|cuda|auto
-#   PROFILE=1 PROFILE_FLOPS=1
-#   FEATURE_GROUPS="fr nr vgg resnet siglip"
-#   CONFIG=configs/pipeline.json PLOTS_DIR=plots FEATURES_DIR=features
-
-PYTHON=${PYTHON:-python}
-DATASET_SOURCE=${DATASET_SOURCE:-hf}
-DATASET_REPO=${DATASET_REPO:-onryabinin/QualiSR-Set120}
-GDRIVE_URL=${GDRIVE_URL:-https://drive.google.com/file/d/1NeGiwWQECTZMxVhJ5ZALxQ5nzRYkz4-E/view?usp=sharing}
-DATASET_ARCHIVE=${DATASET_ARCHIVE:-}
-
-DATASET_DIR=${DATASET_DIR:-dataset}
-FEATURES_DIR=${FEATURES_DIR:-features}
-PLOTS_DIR=${PLOTS_DIR:-plots}
-CONFIG=${CONFIG:-configs/pipeline.json}
-RUNTIME_CONFIG=${RUNTIME_CONFIG:-}
-DEVICE=${DEVICE:-auto}
-
-SR_METHODS=${SR_METHODS:-PASD SUPIR RealESRGAN}
-REF_METHODS=${REF_METHODS:-bicubic rlfn span}
-FEATURE_GROUPS=${FEATURE_GROUPS:-fr nr vgg resnet siglip}
-PCA_COMPONENTS=${PCA_COMPONENTS:-5 10 25 50 75}
-
-INSTALL_DEPS=${INSTALL_DEPS:-0}
-RUN_REFERENCE=${RUN_REFERENCE:-0}
-PROFILE=${PROFILE:-0}
-PROFILE_FLOPS=${PROFILE_FLOPS:-0}
-SAVE_SVG=${SAVE_SVG:-0}
-
-QUALISR=("$PYTHON" -m qualisr.cli)
-DATASET_BASE="$DATASET_DIR"
-PIPELINE_CONFIG=""
+# Launch each image-workflow stage in a separate process, using one recorded
+# configuration so that sample IDs, feature settings and splits stay aligned.
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+python=${PYTHON:-python}
+mode=${1:-cached}
+if (( $# )); then shift; fi
+plots=${PLOTS_DIR:-$PWD/reproduction/$mode}
+dataset=${DATASET_DIR:-$repo/dataset}
+source=${DATASET_SOURCE:-hf}
+archive=${DATASET_ARCHIVE:-}
+runtime=${RUNTIME_CONFIG:-$plots/reproduce_pipeline_config.json}
+features=${FEATURES_DIR:-$plots/features}
 
 run() {
-  printf '\n+'
-  printf ' %q' "$@"
-  printf '\n'
-  "$@"
+    printf '\n+'
+    printf ' %q' "$@"
+    printf '\n'
+    "$@"
 }
 
-need_cmd() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    echo "Missing required command: $1" >&2
-    exit 1
-  fi
+usage() {
+    cat <<'EOF'
+Usage: bash reproduce_pipeline.sh [cached|download|images|set120|paper] [options]
+  cached     Fit the bundled Set120 regression example (default, image-free).
+             Additional arguments go to qualisr-run-regressors, e.g. --no-plots.
+  download   Prepare Set120 and print its resolved root. No model execution.
+  images     Download/reuse Set120, then launch references, features, PCA,
+             embedding differences, statistics and regression separately.
+  set120     Download/reuse Set120 and run grouped presets on the repository raw
+             feature CSVs. Supply --output NEW_DIR and optional grouped runner flags.
+  paper      Run the grouped paper matrix on prepared datasets and feature CSVs.
+             Supply --output NEW_DIR. Additional options include --audit-only.
+
+Set PYTHON to a Python 3.12/3.13 interpreter. DATASET_DIR is the download
+destination. DATASET_SOURCE accepts hf (default), gdrive, archive or skip.
+Use DATASET_ARCHIVE for a local ZIP, TAR or TAR.GZ. DATASET_REVISION overrides
+the Set120 Hugging Face revision. PLOTS_DIR and FEATURES_DIR select outputs.
+CONFIG selects the input config for images or paper. See experiments/README.md
+for the feature-cache contract and commands for the other paper experiments.
+EOF
 }
 
-dataset_ready_at() {
-  local root=$1
-  [[ -d "$root/hr" && -d "$root/lr" && -d "$root/sr" ]]
-}
+case "$mode" in
+    -h|--help) usage; exit 0 ;;
+    cached|set120|paper) ;;
+    download|images) if (( $# )); then usage >&2; exit 2; fi ;;
+    *) usage >&2; exit 2 ;;
+esac
 
-resolve_dataset_base() {
-  if dataset_ready_at "$DATASET_DIR"; then
-    DATASET_BASE="$DATASET_DIR"
-    return
-  fi
-
-  local child
-  for child in "$DATASET_DIR"/*; do
-    if [[ -d "$child" ]] && dataset_ready_at "$child"; then
-      DATASET_BASE="$child"
-      return
+maybe_install_deps() {
+    if [[ ${INSTALL_DEPS:-0} == 1 ]]; then
+        case "$mode" in
+            images) run "$python" -m pip install -r "$repo/requirements.txt" -e "$repo" ;;
+            *) run "$python" -m pip install -c "$repo/requirements.txt" -e "$repo[regressors]" ;;
+        esac
     fi
-  done
-
-  echo "Could not find dataset layout under '$DATASET_DIR'." >&2
-  echo "Expected hr/, lr/, and sr/ directories." >&2
-  exit 1
 }
 
-unpack_archive() {
-  local archive=$1
-  mkdir -p "$DATASET_DIR"
-  case "$archive" in
-    *.zip)
-      need_cmd unzip
-      run unzip -q -o "$archive" -d "$DATASET_DIR"
-      ;;
-    *.tar.gz|*.tgz)
-      run tar -xzf "$archive" -C "$DATASET_DIR"
-      ;;
-    *.tar)
-      run tar -xf "$archive" -C "$DATASET_DIR"
-      ;;
-    *)
-      echo "Unsupported dataset archive format: $archive" >&2
-      exit 1
-      ;;
-  esac
+dataset_ready() {
+    [[ -f $1/labels.csv && -d $1/hr && -d $1/lr && -d $1/sr ]] || return 1
+    PYTHONPATH="$repo" "$python" - "$1" <<'PY'
+import sys
+
+from qualisr.datasets import parse_qualisr_set120
+
+try:
+    rows = parse_qualisr_set120(sys.argv[1], include_refs=False)
+except (FileNotFoundError, ValueError) as error:
+    sys.exit(str(error))
+if len(rows) != 120 or len({r["sr_path"] for r in rows}) != 120 or not all(r["hr_path"] for r in rows):
+    sys.exit(f"Incomplete Set120 images under {sys.argv[1]}")
+PY
+}
+
+locate_dataset() {
+    local child
+    if dataset_ready "$dataset"; then base=$dataset; return 0; fi
+    for child in "$dataset"/*/; do
+        if dataset_ready "$child"; then base=$child; return 0; fi
+    done
+    return 1
 }
 
 download_dataset() {
-  if dataset_ready_at "$DATASET_DIR"; then
-    echo "Dataset already present at '$DATASET_DIR'."
-    return
-  fi
-
-  if [[ -n "$DATASET_ARCHIVE" ]]; then
-    unpack_archive "$DATASET_ARCHIVE"
-    return
-  fi
-
-  case "$DATASET_SOURCE" in
-    hf)
-      need_cmd hf
-      run hf download "$DATASET_REPO" --repo-type dataset --local-dir "$DATASET_DIR"
-      ;;
-    gdrive)
-      need_cmd gdown
-      need_cmd unzip
-      mkdir -p "$DATASET_DIR"
-      run gdown --fuzzy "$GDRIVE_URL" -O "$DATASET_DIR/grounding_dataset.zip"
-      run unzip -q -o "$DATASET_DIR/grounding_dataset.zip" -d "$DATASET_DIR"
-      ;;
-    archive)
-      if [[ -z "$DATASET_ARCHIVE" ]]; then
-        echo "DATASET_SOURCE=archive requires DATASET_ARCHIVE=/path/to/archive." >&2
-        exit 1
-      fi
-      ;;
-    skip)
-      echo "Skipping dataset download."
-      ;;
-    *)
-      echo "Unknown DATASET_SOURCE='$DATASET_SOURCE'. Use hf, gdrive, archive, or skip." >&2
-      exit 1
-      ;;
-  esac
+    case "$source" in
+        hf|gdrive|skip) ;;
+        archive) : "${archive:?Set DATASET_ARCHIVE to a local archive}" ;;
+        *) echo "Unknown DATASET_SOURCE: $source" >&2; exit 2 ;;
+    esac
+    if locate_dataset; then
+        echo "Using Set120 dataset: $base"
+        return
+    fi
+    mkdir -p -- "$dataset"
+    if [[ -n $archive && $source != skip ]]; then
+        case "$archive" in
+            *.zip) run unzip -qn "$archive" -d "$dataset" ;;
+            *.tar|*.tar.gz|*.tgz) run tar --skip-old-files -xf "$archive" -C "$dataset" ;;
+            *) echo "Unsupported dataset archive: $archive" >&2; exit 2 ;;
+        esac
+    elif [[ $source == hf ]]; then
+        hf_repo=${DATASET_REPO:-onryabinin/QualiSR-Set120}
+        revision=${DATASET_REVISION:-}
+        if [[ -z $revision && $hf_repo == onryabinin/QualiSR-Set120 ]]; then
+            revision=dbe874b8167610e43cf121d6e2d47aaafd115217
+        fi
+        hf_args=()
+        if [[ -n $revision ]]; then hf_args+=(--revision "$revision"); fi
+        if [[ -f $dataset/labels.csv ]]; then hf_args+=(--exclude labels.csv); fi
+        if [[ -f $dataset/readme.md ]]; then hf_args+=(--exclude README.md); fi
+        run hf download "$hf_repo" --repo-type dataset "${hf_args[@]}" --local-dir "$dataset"
+    elif [[ $source == gdrive ]]; then
+        run gdown --fuzzy "${GDRIVE_URL:-https://drive.google.com/file/d/1NeGiwWQECTZMxVhJ5ZALxQ5nzRYkz4-E/view}" -O "$dataset/grounding_dataset.zip"
+        run unzip -qn "$dataset/grounding_dataset.zip" -d "$dataset"
+    fi
+    locate_dataset || { echo "Expected labels.csv and hr/, lr/, sr/ under $dataset or one child." >&2; exit 1; }
+    echo "Set120 dataset: $base"
 }
 
-build_dataset_args() {
-  read -r -a METHOD_ARRAY <<< "$SR_METHODS"
-  read -r -a REF_ARRAY <<< "$REF_METHODS"
+run_set120() {
+    # Requires images for the content-identity audit, and the original raw CSVs for fold-local PCA.
+    exec "$python" - "$repo/configs/paper.json" "$base" "${FEATURES_DIR:-$repo/features}" "$@" <<'PYTHON'
+from pathlib import Path
+import json
+import sys
+from tempfile import TemporaryDirectory
 
-  SR_ARGS=()
-  HEATMAP_ARGS=()
-  for method in "${METHOD_ARRAY[@]}"; do
-    SR_ARGS+=("${method}=${DATASET_BASE}/sr/${method}")
-    HEATMAP_ARGS+=("${method}=${DATASET_BASE}/heatmaps/${method}")
-  done
+from experiments.run_grouped import main
 
-  REF_ARGS=()
-  for ref in "${REF_ARRAY[@]}"; do
-    REF_ARGS+=("${ref}=${DATASET_BASE}/ref/${ref}")
-  done
+template, dataset, features, *args = sys.argv[1:]
+config = json.loads(Path(template).read_text())
+(entry,) = [row for row in config["datasets"] if row["name"] == "QualiSR-Set120"]
+entry.update(root=str(Path(dataset).resolve()), features_root=str(Path(features).resolve()))
+config["datasets"] = [entry]
+with TemporaryDirectory() as temporary:
+    path = Path(temporary) / "paper-set120.json"
+    path.write_text(json.dumps(config))
+    main(["--config", str(path), *args])
+PYTHON
 }
 
 write_runtime_pipeline_config() {
-  mkdir -p "$PLOTS_DIR"
-  if [[ -n "$RUNTIME_CONFIG" ]]; then
-    PIPELINE_CONFIG="$RUNTIME_CONFIG"
-  else
-    PIPELINE_CONFIG="$PLOTS_DIR/reproduce_pipeline_config.json"
-  fi
-
-  run "$PYTHON" - "$CONFIG" "$PIPELINE_CONFIG" "$DATASET_BASE" "$FEATURES_DIR" "$PLOTS_DIR" <<'PY'
-from pathlib import Path
+    mkdir -p -- "$plots"
+    run "$python" - "${CONFIG:-$repo/configs/pipeline.json}" "$runtime" "$base" "$features" "$plots" "$repo" <<'PY'
 import json
-import sys
-
-src = Path(sys.argv[1])
-dst = Path(sys.argv[2])
-dataset_root = str(Path(sys.argv[3]).resolve())
-features_root = str(Path(sys.argv[4]).resolve())
-plots_root = str(Path(sys.argv[5]).resolve())
-
-cfg = json.loads(src.read_text())
-cfg["datasets"][0]["root"] = dataset_root
-cfg["datasets"][0]["features_root"] = features_root
-cfg["regressors"]["config"]["paths"]["plots_root"] = plots_root
-
-dst.parent.mkdir(parents=True, exist_ok=True)
-dst.write_text(json.dumps(cfg, indent=2) + "\n")
-PY
-}
-
-run_sample_stage() {
-  local module=$1
-  shift
-
-  # Use the same parsed sample IDs as the configured regressor stage.
-  run "$PYTHON" - "$PIPELINE_CONFIG" "$module" "$@" <<'PY'
-import importlib
-import json
+import os
 import sys
 from pathlib import Path
 
-from qualisr.datasets import load_datasets
-from qualisr.pipeline import config_base_dir
+source, target, dataset, features, plots, repo = map(Path, sys.argv[1:])
+config = json.loads(source.read_text())
+entry, = config["datasets"]
+if entry["name"] != "QualiSR-Set120":
+    raise ValueError("images expects a single QualiSR-Set120 dataset")
+entry.update(root=str(dataset.resolve()), features_root=str(features.resolve()))
+refs = config["references"]
+refs["enabled"] = os.getenv("RUN_REFERENCE", "0") == "1"
+refs["python_exec"] = sys.executable
+if "REF_METHODS" in os.environ:
+    refs["refs"] = os.environ["REF_METHODS"].split()
+for name in ("rlfn", "span"):
+    folder = repo / "realtime_sr" / name.upper()
+    for key, default in (("script", folder / f"inference-{name.upper()}.py"), ("ckpt", folder / f"{name}-tuned-4x.pth")):
+        setting = f"{name}_{key}"
+        refs[setting] = os.getenv(setting.upper(), refs.get(setting, str(default)))
 
-config_path = Path(sys.argv[1])
-cfg = json.loads(config_path.read_text())
-samples = load_datasets(cfg["datasets"], base_dir=config_base_dir(config_path))
-importlib.import_module(sys.argv[2]).main(sys.argv[3:], samples=samples)
+groups = config["features"]["groups"]
+if "FEATURE_GROUPS" in os.environ:
+    selected = os.environ["FEATURE_GROUPS"].replace(",", " ").split()
+    unknown = set(selected) - groups.keys()
+    if unknown:
+        raise ValueError(f"Unknown feature groups: {sorted(unknown)}")
+    for name, group in groups.items():
+        group["enabled"] = name in selected
+common = config["features"]["common"]
+if "DEVICE" in os.environ:
+    common["device"] = os.environ["DEVICE"]
+pca = config["pca"]["common"]
+pca.update(group_column="test_case", split_seed=config["regressors"]["config"]["split_seed"],
+           test_size=entry["regressors"]["test_size"])
+if "PCA_COMPONENTS" in os.environ:
+    pca["n_components"] = [int(n) for n in os.environ["PCA_COMPONENTS"].split()]
+reg = config["regressors"]["config"]
+reg["paths"]["plots_root"] = str(plots.resolve())
+if os.getenv("SAVE_SVG") == "1":
+    reg.setdefault("plot", {})["save_svg"] = True
+if os.getenv("PROFILE") == "1" or os.getenv("PROFILE_FLOPS") == "1":
+    common.update(profile=True, profile_flops=os.getenv("PROFILE_FLOPS") == "1")
+    config["statistics"]["profile"] = True
+    profiles = [g["profile_output"] for g in groups.values() if g.get("enabled", True) and config["features"]["enabled"]]
+    if config["statistics"]["enabled"]:
+        profiles.append(config["statistics"]["profile_output"])
+    reg.setdefault("profiling", {}).update(regressors=True, feature_profile_files=[
+        p.replace("{features_root}", str(features.resolve())) for p in profiles
+    ])
+    for profile in reg["profiling"]["feature_profile_files"]:
+        Path(profile).expanduser().parent.mkdir(parents=True, exist_ok=True)
+target.parent.mkdir(parents=True, exist_ok=True)
+with target.open("x") as stream:
+    stream.write(json.dumps(config, indent=2) + "\n")
 PY
 }
 
-maybe_install_deps() {
-  if [[ "$INSTALL_DEPS" == "1" ]]; then
-    run "$PYTHON" -m pip install -r requirements.txt -e .
-  fi
-}
-
+# Each command reloads the same config through the current dataset-aware runner.
+# Disabled sections remain disabled; all other stages run in their own process.
 maybe_make_references() {
-  if [[ "$RUN_REFERENCE" != "1" ]]; then
-    echo "Skipping reference generation; downloaded dataset already includes dataset/ref."
-    return
-  fi
-
-  run "${QUALISR[@]}" make-reference \
-    --lr-dir "$DATASET_BASE/lr" \
-    --sr-dirs "${SR_ARGS[@]}" \
-    --out-root "$DATASET_BASE/ref" \
-    --refs "${REF_ARRAY[@]}" \
-    --scale 4 \
-    --rlfn-script "${RLFN_SCRIPT:-realtime_sr/RLFN/inference-RLFN.py}" \
-    --rlfn-ckpt "${RLFN_CKPT:-realtime_sr/RLFN/rlfn-tuned-4x.pth}" \
-    --span-script "${SPAN_SCRIPT:-realtime_sr/SPAN/inference-SPAN.py}" \
-    --span-ckpt "${SPAN_CKPT:-realtime_sr/SPAN/span-tuned-4x.pth}"
-}
-
-extract_feature_group() {
-  local feature_group=$1
-  local output_csv="$FEATURES_DIR/${feature_group}.csv"
-  local -a FEATURE_PROFILE_ARGS=()
-  if [[ "$PROFILE" == "1" || "$PROFILE_FLOPS" == "1" ]]; then
-    FEATURE_PROFILE_ARGS+=(--profile --profile-output "$FEATURES_DIR/${feature_group}_profile.csv")
-  fi
-  if [[ "$PROFILE_FLOPS" == "1" ]]; then
-    FEATURE_PROFILE_ARGS+=(--profile-flops)
-  fi
-
-  run_sample_stage qualisr.features \
-    --sr-dirs "${SR_ARGS[@]}" \
-    --gt-dir "$DATASET_BASE/hr" \
-    --lr-dir "$DATASET_BASE/lr" \
-    --ref-dirs "${REF_ARGS[@]}" \
-    --features "$feature_group" \
-    --output "$output_csv" \
-    --device "$DEVICE" \
-    "${FEATURE_PROFILE_ARGS[@]}"
+    run "$python" -m qualisr.cli run-pipeline --config "$runtime" --only-section references
 }
 
 extract_features() {
-  mkdir -p "$FEATURES_DIR"
-  local -a FEATURE_GROUP_ARRAY=()
-  read -r -a FEATURE_GROUP_ARRAY <<< "${FEATURE_GROUPS//,/ }"
-
-  for feature_group in "${FEATURE_GROUP_ARRAY[@]}"; do
-    extract_feature_group "$feature_group"
-  done
+    run "$python" -m qualisr.cli run-pipeline --config "$runtime" --only-section features
 }
 
 apply_pca() {
-  mkdir -p "$FEATURES_DIR/pca"
-  read -r -a PCA_ARRAY <<< "$PCA_COMPONENTS"
+    run "$python" -m qualisr.cli run-pipeline --config "$runtime" --only-section pca
+}
 
-  run "${QUALISR[@]}" apply-pca \
-    --input "$FEATURES_DIR/vgg.csv" \
-    --blocks vgg=vgg_ \
-    --n-components "${PCA_ARRAY[@]}" \
-    --test-size 0.2 \
-    --split-seed 42 \
-    --output-dir "$FEATURES_DIR/pca"
-
-  run "${QUALISR[@]}" apply-pca \
-    --input "$FEATURES_DIR/resnet.csv" \
-    --blocks resnet=resnet_ \
-    --n-components "${PCA_ARRAY[@]}" \
-    --test-size 0.2 \
-    --split-seed 42 \
-    --output-dir "$FEATURES_DIR/pca"
+compute_embedding_differences() {
+    run "$python" -m qualisr.cli run-pipeline --config "$runtime" --only-section embedding_difference
 }
 
 compute_stats() {
-  local -a STATS_PROFILE_ARGS=()
-  if [[ "$PROFILE" == "1" || "$PROFILE_FLOPS" == "1" ]]; then
-    STATS_PROFILE_ARGS+=(--profile --profile-output "$FEATURES_DIR/stats_profile.csv")
-  fi
-
-  run_sample_stage qualisr.statistics \
-    --heatmap-dirs "${HEATMAP_ARGS[@]}" \
-    --output "$FEATURES_DIR/stats.csv" \
-    --percentiles 5 95 \
-    --area-thresholds 0 0.5 0.75 \
-    "${STATS_PROFILE_ARGS[@]}"
+    run "$python" -m qualisr.cli run-pipeline --config "$runtime" --only-section statistics
 }
 
 run_regressors() {
-  mkdir -p "$PLOTS_DIR"
-
-  local -a REGRESSOR_ARGS=(--config "$PIPELINE_CONFIG" --plots-root "$PLOTS_DIR")
-  if [[ "$SAVE_SVG" == "1" ]]; then
-    REGRESSOR_ARGS+=(--save-svg)
-  fi
-  if [[ "$PROFILE" == "1" || "$PROFILE_FLOPS" == "1" ]]; then
-    REGRESSOR_ARGS+=(--profile)
-    local -a PROFILE_FILES=()
-    for profile_file in "$FEATURES_DIR"/*_profile.csv; do
-      [[ -f "$profile_file" ]] && PROFILE_FILES+=("$profile_file")
-    done
-    if [[ ${#PROFILE_FILES[@]} -gt 0 ]]; then
-      REGRESSOR_ARGS+=(--feature-profile-files "${PROFILE_FILES[@]}")
-    fi
-  fi
-
-  run "${QUALISR[@]}" run-regressors "${REGRESSOR_ARGS[@]}"
+    run "$python" -m qualisr.cli run-pipeline --config "$runtime" --only-section regressors
 }
 
 main() {
-  maybe_install_deps
-  download_dataset
-  resolve_dataset_base
-  build_dataset_args
-  write_runtime_pipeline_config
-  maybe_make_references
-  extract_features
-  apply_pca
-  compute_stats
-  run_regressors
+    "$python" -c 'import sys; sys.exit(0 if (3, 12) <= sys.version_info[:2] < (3, 14) else "Python 3.12 or 3.13 is required")'
+    maybe_install_deps
+    case "$mode" in
+        cached) exec "$python" -m qualisr.cli run-regressors --plots-root "$plots" "$@" ;;
+        paper) exec "$python" -m experiments.run_grouped --config "${CONFIG:-$repo/configs/paper.json}" "$@" ;;
+    esac
 
-  echo
-  echo "Reproducibility pipeline complete."
-  echo "Dataset: $DATASET_BASE"
-  echo "Features: $FEATURES_DIR"
-  echo "Plots: $PLOTS_DIR"
+    download_dataset
+    case "$mode" in
+        download) return ;;
+        set120) run_set120 "$@" ;;
+    esac
+
+    write_runtime_pipeline_config
+    maybe_make_references
+    extract_features
+    apply_pca
+    compute_embedding_differences
+    compute_stats
+    run_regressors
+
+    printf '\nReproducibility pipeline complete.\n'
+    printf 'Dataset: %s\nFeatures: %s\nPlots: %s\n' "$base" "$features" "$plots"
 }
 
 main "$@"

@@ -15,6 +15,7 @@ RUN apt-get update \
 
 COPY pyproject.toml setup.py MANIFEST.in requirements.txt README.md LICENSE THIRD_PARTY_NOTICES.md ./
 COPY qualisr ./qualisr
+COPY experiments ./experiments
 COPY configs ./configs
 COPY features ./features
 COPY dataset ./dataset
