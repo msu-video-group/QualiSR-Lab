@@ -288,6 +288,8 @@ The same command can operate on raw embeddings, for example with `--blocks vgg_d
 
 Compute summary statistics for heatmaps stored as `.npy`, `.npy.gz`, or compatible compressed files. Input directories can be passed as `PREFIX=DIR` to ensure stable sample naming.
 
+The WASD checkpoint used to generate the paper’s heatmaps is available at [Google Drive](https://drive.google.com/file/d/16sCR8fSSDeu6uEjY-vaFQNJc3s1wz6ow/view?usp=sharing).
+
 ```bash
 qualisr-compute-stats \
   --heatmap-dirs PASD=dataset/heatmaps/PASD SUPIR=dataset/heatmaps/SUPIR RealESRGAN=dataset/heatmaps/RealESRGAN \

@@ -44,8 +44,10 @@ constraints and edit a copy of [`configs/paper_features.json`](../configs/paper_
 Set fresh `features_root` paths and supply pseudo-references at the actual SR
 dimensions and artifact maps. The QualiSR-Set120 download includes both;
 other datasets require separate preparation. Reference generation is described
-in the [main README](../README.md#step-0-optional-prepare-reference-images);
-the WASD detector runs externally.
+in the [main README](../README.md#step-0-optional-prepare-reference-images).
+The WASD detector runs externally. The
+[heatmap statistics section](../README.md#step-4-compute-artifact-mask-statistics)
+links to the study checkpoint.
 
 ```bash
 qualisr-run-pipeline --config /path/to/paper_features.json --only-section features statistics
@@ -54,8 +56,7 @@ qualisr-run-experiments --config configs/paper.json --audit-only --output "$out/
 
 [Recorded hashes](inputs/paper_features.sha256) identify the original 32 feature
 inputs. Keep cache paths fixed across dependent stages and save runtime/input
-manifests. Some original NR/FR extractor settings are unknown and the WASD
-checkpoint is private, so newly extracted features may produce different results.
+manifests.
 
 For a small installation check, use `qualisr-run-regressors --no-plots`.
 For grouped experiments on QualiSR-Set120 alone, use
